@@ -12,7 +12,7 @@
 #![allow(clippy::match_bool)]
 
 use anyhow::{anyhow, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use std::{io::Write, path::PathBuf, process::Command as ProcessCommand, sync::Arc};
 
 use std::time::Instant;
@@ -85,14 +85,65 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum ConfigCommand {
-    /// Interactively create or update the config file
-    Wizard,
+    /// Interactively create or update the config file. Pass flags to run non-interactively.
+    Wizard(WizardOptions),
     /// Print the current config file, or one config key
     Get { key: Option<String> },
     /// Set one config key in the config file
     Set { key: String, value: String },
     /// Open the config file in $EDITOR
     Edit,
+}
+
+#[derive(ClapArgs, Default)]
+struct WizardOptions {
+    /// Provider: mistral, groq, or local
+    #[arg(long)]
+    provider: Option<String>,
+
+    /// Mistral API key
+    #[arg(long)]
+    mistral_api_key: Option<String>,
+
+    /// Groq API key
+    #[arg(long)]
+    groq_api_key: Option<String>,
+
+    /// Mistral model
+    #[arg(long)]
+    mistral_model: Option<String>,
+
+    /// Groq model
+    #[arg(long)]
+    groq_model: Option<String>,
+
+    /// Local Whisper model filename
+    #[arg(long)]
+    whisper_model: Option<String>,
+
+    /// Language: auto or ISO code like en, es, fr
+    #[arg(long)]
+    language: Option<String>,
+
+    /// Output mode: type, clipboard, or stdout
+    #[arg(long)]
+    output_mode: Option<String>,
+
+    /// Desktop/compositor: hyprland, niri, gnome, kde, sway, or other
+    #[arg(long)]
+    desktop: Option<String>,
+
+    /// Shortcut key label/config value, e.g. SUPER,R, Mod,R, or <Super>r
+    #[arg(long)]
+    shortcut_key: Option<String>,
+
+    /// Enable audio feedback beeps: true or false
+    #[arg(long)]
+    audio_feedback: Option<String>,
+
+    /// Beep volume from 0.0 to 1.0
+    #[arg(long)]
+    beep_volume: Option<String>,
 }
 
 #[derive(Parser)]
@@ -114,6 +165,10 @@ struct ShortcutArgs {
 enum ShortcutDesktop {
     Hyprland,
     Niri,
+    Gnome,
+    Kde,
+    Sway,
+    Other,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -163,8 +218,8 @@ fn normalize_config_key(key: &str) -> String {
         "audio_feedback" | "enable_audio_feedback" => "ENABLE_AUDIO_FEEDBACK",
         "beep_volume" => "BEEP_VOLUME",
         "shortcut" | "shortcut_key" => "SHORTCUT_KEY",
-        "shortcut_desktop" => "SHORTCUT_DESKTOP",
-        "output_mode" => "OUTPUT_MODE",
+        "desktop" | "shortcut_desktop" => "SHORTCUT_DESKTOP",
+        "mode" | "output_mode" => "OUTPUT_MODE",
         other => return other.to_uppercase(),
     }
     .to_string()
@@ -237,32 +292,60 @@ fn prompt(label: &str, default: Option<&str>) -> Result<String> {
     }
 }
 
-fn run_config_wizard(path: &PathBuf) -> Result<()> {
+fn option_or_prompt(
+    value: &Option<String>,
+    message: &str,
+    default: Option<&str>,
+) -> Result<String> {
+    match value {
+        Some(value) => Ok(value.clone()),
+        None => prompt(message, default),
+    }
+}
+
+fn run_config_wizard(path: &PathBuf, options: &WizardOptions) -> Result<()> {
     ensure_config_file(path)?;
     println!("Configuring Dictate at {}", path.display());
 
-    let provider = prompt("Provider (mistral/groq/local)", Some("mistral"))?.to_lowercase();
+    let provider = option_or_prompt(
+        &options.provider,
+        "Provider (mistral/groq/local)",
+        Some("mistral"),
+    )?
+    .to_lowercase();
     set_config_value(path, "provider", &provider)?;
 
     match provider.as_str() {
         "mistral" => {
-            let key = prompt("Mistral API key", None)?;
+            let key = option_or_prompt(&options.mistral_api_key, "Mistral API key", None)?;
             if !key.is_empty() {
                 set_config_value(path, "mistral-api-key", &key)?;
             }
-            let model = prompt("Mistral model", Some("voxtral-mini-latest"))?;
+            let model = option_or_prompt(
+                &options.mistral_model,
+                "Mistral model",
+                Some("voxtral-mini-latest"),
+            )?;
             set_config_value(path, "mistral-model", &model)?;
         }
         "groq" => {
-            let key = prompt("Groq API key", None)?;
+            let key = option_or_prompt(&options.groq_api_key, "Groq API key", None)?;
             if !key.is_empty() {
                 set_config_value(path, "groq-api-key", &key)?;
             }
-            let model = prompt("Groq model", Some("whisper-large-v3-turbo"))?;
+            let model = option_or_prompt(
+                &options.groq_model,
+                "Groq model",
+                Some("whisper-large-v3-turbo"),
+            )?;
             set_config_value(path, "groq-model", &model)?;
         }
         "local" => {
-            let model = prompt("Local Whisper model", Some("ggml-base.en.bin"))?;
+            let model = option_or_prompt(
+                &options.whisper_model,
+                "Local Whisper model",
+                Some("ggml-base.en.bin"),
+            )?;
             set_config_value(path, "whisper-model", &model)?;
         }
         _ => {
@@ -273,32 +356,69 @@ fn run_config_wizard(path: &PathBuf) -> Result<()> {
         }
     }
 
-    let language = prompt("Language (auto or ISO code like en)", Some("auto"))?;
+    let language = option_or_prompt(
+        &options.language,
+        "Language (auto or ISO code like en)",
+        Some("auto"),
+    )?;
     set_config_value(path, "language", &language)?;
 
-    let output_mode = prompt(
+    let output_mode = option_or_prompt(
+        &options.output_mode,
         "Default shortcut output (type/clipboard/stdout)",
         Some("type"),
     )?;
     set_config_value(path, "output-mode", &output_mode)?;
 
-    let desktop = prompt("Shortcut desktop (hyprland/niri)", Some("hyprland"))?;
+    let desktop = option_or_prompt(
+        &options.desktop,
+        "Desktop environment (hyprland/niri/gnome/kde/sway/other)",
+        Some("hyprland"),
+    )?
+    .to_lowercase();
     set_config_value(path, "shortcut-desktop", &desktop)?;
 
-    let shortcut = prompt("Shortcut key label", Some("SUPER,R"))?;
+    let default_shortcut = match desktop.as_str() {
+        "niri" => "Mod,R",
+        "gnome" => "<Super>r",
+        "kde" => "Meta+R",
+        "sway" => "Mod4+R",
+        _ => "SUPER,R",
+    };
+    let shortcut = option_or_prompt(
+        &options.shortcut_key,
+        "Shortcut key",
+        Some(default_shortcut),
+    )?;
     set_config_value(path, "shortcut-key", &shortcut)?;
+
+    let audio_feedback = option_or_prompt(
+        &options.audio_feedback,
+        "Audio feedback beeps (true/false)",
+        Some("true"),
+    )?;
+    set_config_value(path, "audio-feedback", &audio_feedback)?;
+
+    if audio_feedback.trim().eq_ignore_ascii_case("true") || options.beep_volume.is_some() {
+        let beep_volume = option_or_prompt(
+            &options.beep_volume,
+            "Beep volume (0.0 to 1.0)",
+            Some("0.1"),
+        )?;
+        set_config_value(path, "beep-volume", &beep_volume)?;
+    }
 
     println!("\nSaved config to {}", path.display());
     println!(
-        "Run `dictate shortcuts {}` to print a shortcut snippet.",
-        desktop
+        "Run `dictate shortcuts {} --mode {} --key {}` to print a shortcut snippet.",
+        desktop, output_mode, shortcut
     );
     Ok(())
 }
 
 fn run_config_command(command: &ConfigCommand, path: &PathBuf) -> Result<()> {
     match command {
-        ConfigCommand::Wizard => run_config_wizard(path),
+        ConfigCommand::Wizard(options) => run_config_wizard(path, options),
         ConfigCommand::Get { key } => {
             if let Some(key) = key {
                 match read_config_value(path, key)? {
@@ -350,11 +470,48 @@ fn print_shortcut(args: &ShortcutArgs) {
             let key = args.key.replace(',', ", ");
             println!("# Dictate ({})", args.mode_name());
             println!("bind = {}, exec, {}", key, shell);
+            println!("# Clipboard variant:");
+            println!("# bind = {} SHIFT, {}, exec, pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to wl-copy &)", 
+                args.key.split(',').next().unwrap_or("SUPER"),
+                args.key.split(',').nth(1).unwrap_or("R"));
         }
         ShortcutDesktop::Niri => {
             let key = args.key.replace(',', "+");
             println!("// Dictate ({})", args.mode_name());
             println!("{} {{ spawn \"sh\" \"-c\" \"{}\"; }}", key, shell);
+            println!("// Clipboard variant:");
+            let mod_key = args.key.split(',').next().unwrap_or("Mod");
+            let char_key = args.key.split(',').nth(1).unwrap_or("R");
+            println!("// Shift+{}+{} {{ spawn \"sh\" \"-c\" \"pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to wl-copy &)\"; }}", mod_key, char_key);
+        }
+        ShortcutDesktop::Gnome => {
+            println!("# GNOME Custom Shortcut");
+            println!("# 1. Open Settings → Keyboard → Keyboard Shortcuts");
+            println!("# 2. Scroll to bottom, click +");
+            println!("# 3. Name: Dictate ({})", args.mode_name());
+            println!("#    Command: sh -c '{}'", shell);
+            println!("#    Shortcut: {}", args.key);
+            println!("#");
+            println!("# Run this to set it programmatically:");
+            println!("# gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/dictate/ name 'Dictate ({})'", args.mode_name());
+            println!("# gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/dictate/ binding '{}'", args.key);
+            println!("# gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/dictate/ command 'sh -c \"{}\"'", shell);
+        }
+        ShortcutDesktop::Kde | ShortcutDesktop::Sway => {
+            println!(
+                "# {} Custom Shortcut",
+                match args.desktop {
+                    ShortcutDesktop::Kde => "KDE",
+                    _ => "Sway",
+                }
+            );
+            println!("# Add this command as a custom shortcut:");
+            println!("{}", shell);
+        }
+        ShortcutDesktop::Other => {
+            println!("# Generic Custom Shortcut");
+            println!("# Add this command as a custom shortcut in your desktop settings:");
+            println!("{}", shell);
         }
     }
 }

@@ -10,11 +10,26 @@ curl -fsSL https://dictate.adityamer.dev/install.sh | sh
 
 The installer will:
 1. Detect your distro and install system dependencies (PipeWire, etc.)
-2. Download the latest binary from GitHub Releases
-3. Fall back to building from source if no binary is available
-4. Create `~/.config/dictate/.env` with defaults
-5. Prompt for your API key and preferred provider
-6. Print shortcut snippets for your compositor
+2. Download the latest binary from GitHub Releases, or build from source
+3. Install `dictate` locally
+4. Run `dictate config wizard` locally so you can configure everything interactively
+5. Print shortcut instructions generated from your wizard answers
+
+The wizard asks you:
+- **Provider** — mistral (default), groq, or local
+- **API key** — your Mistral or Groq API key
+- **Model** — model name for your provider
+- **Language** — auto or an ISO code like `en`
+- **Output mode** — type (directly into window), clipboard, or stdout
+- **Desktop environment** — hyprland, niri, gnome, kde, sway, or other
+- **Shortcut key** — e.g. `SUPER,R`, `Mod,R`, or `<Super>r`
+- **Audio feedback** — enable/disable beeps and choose beep volume
+
+**Release note:** the fastest path needs a GitHub Release binary. If no matching release binary is available, the installer falls back to building from source. To force source builds, run:
+
+```bash
+DICTATE_BUILD_FROM_SOURCE=yes sh -c "$(curl -fsSL https://dictate.adityamer.dev/install.sh)"
+```
 
 ---
 
@@ -122,18 +137,38 @@ mkdir -p ~/.config/dictate
 
 ### Using the Wizard
 
+Interactive setup:
+
 ```bash
 dictate config wizard
 ```
 
-The wizard asks for:
+Non-interactive setup, useful for scripts and AI agents after collecting answers:
+
+```bash
+dictate config wizard \
+  --provider mistral \
+  --mistral-api-key "$MISTRAL_API_KEY" \
+  --mistral-model voxtral-mini-latest \
+  --language auto \
+  --output-mode type \
+  --desktop hyprland \
+  --shortcut-key SUPER,R \
+  --audio-feedback true \
+  --beep-volume 0.1
+```
+
+For Groq, use `--provider groq --groq-api-key "$GROQ_API_KEY" --groq-model whisper-large-v3-turbo`. For local Whisper, use `--provider local --whisper-model ggml-base.en.bin`, then run `dictate --download-model`.
+
+The wizard supports:
 - **Provider** — `mistral` (default), `groq`, or `local`
 - **API key** — your Mistral or Groq API key
 - **Model** — model name for the chosen provider
 - **Language** — `auto` or an ISO code like `en`
 - **Output mode** — `type`, `clipboard`, or `stdout`
-- **Desktop** — `hyprland` or `niri`
-- **Shortcut key** — e.g. `SUPER,R` or `Mod+R`
+- **Desktop** — `hyprland`, `niri`, `gnome`, `kde`, `sway`, or `other`
+- **Shortcut key** — e.g. `SUPER,R`, `Mod,R`, or `<Super>r`
+- **Audio feedback** — enable/disable beeps and choose beep volume
 
 ### Manual Config
 
@@ -308,14 +343,35 @@ paru -R dictate-bin
 
 ## For AI Coding Agents
 
-This guide can be used as context for AI coding agents to install and configure dictate automatically. Provide the agent with the URL to this file and ask it to:
+AI agents should ask the user the setup questions first, install with the interactive wizard skipped, then run `dictate config wizard` with flags so setup completes without asking the user to do anything manually.
 
-1. Read this INSTALL.md
-2. Ask you setup questions (provider, API key, desktop, etc.)
-3. Execute the installation and configuration steps
+Ask the user:
+1. **Provider** — `mistral`, `groq`, or `local`?
+2. **API key** — Mistral or Groq key, if using an online provider?
+3. **Model** — provider model, or default?
+4. **Language** — `auto` or an ISO code like `en`?
+5. **Output mode** — `type`, `clipboard`, or `stdout`?
+6. **Desktop** — `hyprland`, `niri`, `gnome`, `kde`, `sway`, or `other`?
+7. **Shortcut key** — e.g. `SUPER,R`, `Mod,R`, or `<Super>r`?
+8. **Audio feedback** — enable beeps? What volume?
 
-```text
-Read https://dictate.adityamer.dev/INSTALL.md and follow it step by step 
-to install and configure dictate on this machine. Ask me the setup questions 
-first, then execute everything non-interactively using 'dictate config set'.
+Then run:
+
+```bash
+curl -fsSL https://dictate.adityamer.dev/install.sh | DICTATE_SKIP_WIZARD=yes sh
+
+dictate config wizard \
+  --provider mistral \
+  --mistral-api-key "$MISTRAL_API_KEY" \
+  --mistral-model voxtral-mini-latest \
+  --language auto \
+  --output-mode type \
+  --desktop hyprland \
+  --shortcut-key SUPER,R \
+  --audio-feedback true \
+  --beep-volume 0.1
+
+dictate shortcuts hyprland --mode type --key SUPER,R
 ```
+
+For Groq, use `--provider groq --groq-api-key "$GROQ_API_KEY" --groq-model whisper-large-v3-turbo`. For local Whisper, use `--provider local --whisper-model ggml-base.en.bin`, then run `dictate --download-model`.

@@ -54,10 +54,15 @@ impl Default for Config {
 
 impl Config {
     /// Directory where local whisper models are stored
+    /// Uses XDG data directory: ~/.local/share/dictate/models
     pub fn model_dir() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".local/share/applications/dictate/models")
+        dirs::data_dir()
+            .unwrap_or_else(|| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".local/share")
+            })
+            .join("dictate/models")
     }
 
     /// Full path to a model file in the model directory

@@ -1,2 +1,35 @@
+# Rust build artifacts
 /target
+
+# Environment files
 .env
+
+# Editor/IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Site build artifacts
+site/.next/
+site/out/
+site/node_modules/
+site/.vercel
+
+# Logs
+*.log

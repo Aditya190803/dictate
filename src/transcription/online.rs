@@ -3,10 +3,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthStyle {
     Bearer,
-    XApiKey,
 }
 
 #[derive(Debug, Clone)]
@@ -75,7 +74,6 @@ impl OnlineTranscriptionProvider {
             AuthStyle::Bearer => {
                 request.header("Authorization", format!("Bearer {}", self.options.api_key))
             }
-            AuthStyle::XApiKey => request.header("x-api-key", self.options.api_key.clone()),
         };
 
         let response = request.send().await.map_err(|e| {

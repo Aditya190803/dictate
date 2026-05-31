@@ -99,6 +99,51 @@ pub trait TranscriptionProvider: Send + Sync {
 pub struct TranscriptionFactory;
 
 impl TranscriptionFactory {
+    fn create_online_options(
+        provider_type: &str,
+        config: crate::config::Config,
+    ) -> Result<online::OnlineProviderOptions, TranscriptionError> {
+        match provider_type.to_lowercase().as_str() {
+            "mistral" => {
+                let api_key = config.mistral_api_key.ok_or_else(|| {
+                    TranscriptionError::ConfigurationError("Mistral API key not found".to_string())
+                })?;
+
+                Ok(online::OnlineProviderOptions {
+                    provider_name: "Mistral",
+                    api_key,
+                    timeout_seconds: config.transcription_timeout_seconds,
+                    max_retries: config.transcription_max_retries,
+                    model: config.mistral_model,
+                    base_url: config
+                        .mistral_base_url
+                        .unwrap_or_else(|| "https://api.mistral.ai/v1".to_string()),
+                    auth_style: online::AuthStyle::Bearer,
+                })
+            }
+            "groq" => {
+                let api_key = config.groq_api_key.ok_or_else(|| {
+                    TranscriptionError::ConfigurationError("Groq API key not found".to_string())
+                })?;
+
+                Ok(online::OnlineProviderOptions {
+                    provider_name: "Groq",
+                    api_key,
+                    timeout_seconds: config.transcription_timeout_seconds,
+                    max_retries: config.transcription_max_retries,
+                    model: config.groq_model,
+                    base_url: config
+                        .groq_base_url
+                        .unwrap_or_else(|| "https://api.groq.com/openai/v1".to_string()),
+                    auth_style: online::AuthStyle::Bearer,
+                })
+            }
+            _ => Err(TranscriptionError::UnsupportedProvider(
+                provider_type.to_string(),
+            )),
+        }
+    }
+
     pub async fn create_provider(
         provider_type: &str,
     ) -> Result<Box<dyn TranscriptionProvider>, TranscriptionError> {
@@ -106,42 +151,16 @@ impl TranscriptionFactory {
 
         match provider_type.to_lowercase().as_str() {
             "mistral" => {
-                let api_key = config.mistral_api_key.ok_or_else(|| {
-                    TranscriptionError::ConfigurationError("Mistral API key not found".to_string())
-                })?;
-
-                let provider =
-                    online::OnlineTranscriptionProvider::new(online::OnlineProviderOptions {
-                        provider_name: "Mistral",
-                        api_key,
-                        timeout_seconds: config.transcription_timeout_seconds,
-                        max_retries: config.transcription_max_retries,
-                        model: config.mistral_model,
-                        base_url: config
-                            .mistral_base_url
-                            .unwrap_or_else(|| "https://api.mistral.ai/v1".to_string()),
-                        auth_style: online::AuthStyle::XApiKey,
-                    })?;
+                let provider = online::OnlineTranscriptionProvider::new(
+                    Self::create_online_options("mistral", config)?,
+                )?;
 
                 Ok(Box::new(provider))
             }
             "groq" => {
-                let api_key = config.groq_api_key.ok_or_else(|| {
-                    TranscriptionError::ConfigurationError("Groq API key not found".to_string())
-                })?;
-
-                let provider =
-                    online::OnlineTranscriptionProvider::new(online::OnlineProviderOptions {
-                        provider_name: "Groq",
-                        api_key,
-                        timeout_seconds: config.transcription_timeout_seconds,
-                        max_retries: config.transcription_max_retries,
-                        model: config.groq_model,
-                        base_url: config
-                            .groq_base_url
-                            .unwrap_or_else(|| "https://api.groq.com/openai/v1".to_string()),
-                        auth_style: online::AuthStyle::Bearer,
-                    })?;
+                let provider = online::OnlineTranscriptionProvider::new(
+                    Self::create_online_options("groq", config)?,
+                )?;
 
                 Ok(Box::new(provider))
             }
@@ -276,6 +295,18 @@ mod tests {
 
             clear_env_vars();
         }
+    }
+
+    #[test]
+    fn test_mistral_provider_uses_bearer_auth() {
+        let config = crate::config::Config {
+            mistral_api_key: Some("test-key".to_string()),
+            ..crate::config::Config::default()
+        };
+
+        let options = TranscriptionFactory::create_online_options("mistral", config).unwrap();
+
+        assert_eq!(options.auth_style, online::AuthStyle::Bearer);
     }
 
     #[tokio::test]

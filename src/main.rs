@@ -13,7 +13,7 @@
 
 use anyhow::{anyhow, Result};
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
-use std::{io::Write, path::PathBuf, process::Command as ProcessCommand, sync::Arc};
+use std::{io::Write, path::PathBuf, process::Command as ProcessCommand};
 
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
@@ -35,6 +35,7 @@ mod wav;
 
 #[cfg(test)]
 mod test_utils;
+#[cfg(not(test))]
 use audio::AudioRecorder;
 use audio_processing::AudioProcessor;
 use beep::{BeepConfig, BeepPlayer, BeepType};
@@ -73,6 +74,7 @@ struct Args {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     /// Read, write, or interactively create configuration
     Config {
@@ -84,6 +86,7 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum ConfigCommand {
     /// Interactively create or update the config file. Pass flags to run non-interactively.
     Wizard(WizardOptions),
@@ -958,7 +961,7 @@ async fn run_daemon_clip_mode(config: &Config, args: &Args) -> Result<()> {
                                         config,
                                         args.pipe_to.as_ref(),
                                         &beep_player,
-                                        Arc::clone(&provider),
+                                        std::sync::Arc::clone(&provider),
                                     )
                                     .await
                                     {
@@ -1011,6 +1014,7 @@ async fn run_daemon_clip_mode(config: &Config, args: &Args) -> Result<()> {
 }
 
 /// Process a clip using a pre-loaded provider (for daemon mode)
+#[cfg(not(test))]
 async fn process_clip_with_provider(
     audio_data: Vec<f32>,
     sample_rate: u32,
@@ -1147,11 +1151,12 @@ async fn main() -> Result<()> {
     // Mode selection
     if args.stream {
         // Stream mode: continuous VAD-based transcription
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel(1);
+        let (_shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel(1);
 
         // Set up signal handler for graceful shutdown
         #[cfg(not(test))]
         {
+            let shutdown_tx = _shutdown_tx;
             tokio::spawn(async move {
                 let mut signals = Signals::new([SIGTERM]).unwrap();
                 if signals.next().await.is_some() {

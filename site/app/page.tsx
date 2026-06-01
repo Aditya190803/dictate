@@ -11,7 +11,6 @@ import {
   Stack,
   Monitor,
   ShieldCheck,
-  Terminal,
 } from "@phosphor-icons/react";
 import CopyButton from "./components/CopyButton";
 
@@ -40,7 +39,7 @@ const FEATURES = [
 export default function Home() {
   const [mounted, setMounted] = useState(false);
   const containerRef = useRef<HTMLElement>(null);
-  const heroIconRef = useRef<HTMLDivElement>(null);
+
   const heroH1Ref = useRef<HTMLHeadingElement>(null);
   const heroDescRef = useRef<HTMLParagraphElement>(null);
   const heroWaveformRef = useRef<HTMLDivElement>(null);
@@ -62,8 +61,8 @@ export default function Home() {
     if (prefersReducedMotion) return;
 
     const ctx = gsap.context(() => {
-      // Left column: icon → h1 → desc → waveform
-      const heroTextEls = [heroIconRef.current, heroH1Ref.current, heroDescRef.current, heroWaveformRef.current].filter(Boolean);
+      // Left column: h1 → desc → waveform
+      const heroTextEls = [heroH1Ref.current, heroDescRef.current, heroWaveformRef.current].filter(Boolean);
       if (heroTextEls.length > 0) {
         gsap.fromTo(heroTextEls,
           { opacity: 0, y: 32 },
@@ -122,7 +121,11 @@ export default function Home() {
         <div className="nav-links">
           <a href="#how" className="nav-link hm">How it works</a>
           <a href="#features" className="nav-link hm">Features</a>
-          <a href="https://github.com/Aditya190803/dictate" target="_blank" rel="noopener noreferrer" className="nav-link">GitHub</a>
+          <a href="https://github.com/Aditya190803/dictate" target="_blank" rel="noopener noreferrer" className="nav-github">
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+            </svg>
+            <span>GitHub</span>
+          </a>
         </div>
       </nav>
 
@@ -134,10 +137,6 @@ export default function Home() {
 
         <div className="wrap hero-wrap">
           <div className="hero-text">
-            <div ref={heroIconRef} className="hero-icon">
-              <Terminal weight="duotone" size={44} color="var(--accent)" />
-            </div>
-
             <h1 ref={heroH1Ref}>
               Voice to text,<br />
               from your <span>terminal.</span>
@@ -204,6 +203,7 @@ export default function Home() {
       <section className="sec" id="how">
         <div className="wrap">
           <div ref={howHeadRef} className="sec-head">
+            <span className="sec-head-label">// flow</span>
             <h2>How it works</h2>
             <p>A single UNIX signal controls the entire flow. No daemon polling, no wasted resources.</p>
           </div>
@@ -226,6 +226,7 @@ export default function Home() {
       <section className="sec" id="features">
         <div className="wrap">
           <div ref={featHeadRef} className="sec-head">
+            <span className="sec-head-label">// features</span>
             <h2>Built for the terminal</h2>
             <p>A UNIX citizen. Composable. Zero runtime overhead when idle.</p>
           </div>
@@ -249,10 +250,19 @@ export default function Home() {
 
       {/* ── FOOTER ── */}
       <footer className="foot">
-        <span>Rust · PipeWire · Wayland · GPL-3.0</span>
-        <div className="foot-links">
-          <a href="https://github.com/Aditya190803/dictate" target="_blank" rel="noopener noreferrer">GitHub</a>
-          <a href="https://github.com/Aditya190803/dictate/releases" target="_blank" rel="noopener noreferrer">Releases</a>
+        <div className="foot-inner">
+          <div className="foot-brand">
+            <div className="foot-logo">
+              dictate
+            </div>
+            <div className="foot-tech">
+              Rust<span>·</span>PipeWire<span>·</span>Wayland<span>·</span>GPL-3.0
+            </div>
+          </div>
+          <div className="foot-links">
+            <a href="https://github.com/Aditya190803/dictate" target="_blank" rel="noopener noreferrer">GitHub</a>
+            <a href="https://github.com/Aditya190803/dictate/releases" target="_blank" rel="noopener noreferrer">Releases</a>
+          </div>
         </div>
       </footer>
     </main>

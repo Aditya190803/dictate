@@ -233,6 +233,8 @@ dictate shortcuts niri --mode clipboard --key Mod+Shift+R
 
 dictate supports three transcription providers: **Mistral** (default), **Groq**, and **Local Whisper**.
 
+Mistral uses true realtime STT by default, including from normal keyboard shortcuts. Set `BATCH_MODE=true` to opt out and use whole-clip batch transcription with the normal audio endpoint.
+
 ### Mistral (Default)
 
 **Required:** Create `~/.config/dictate/.env` with your Mistral API key:
@@ -244,8 +246,22 @@ MISTRAL_API_KEY=your_api_key_here
 **Optional Mistral settings:**
 ```bash
 TRANSCRIPTION_PROVIDER=mistral
+
+# false = realtime by default for Mistral, including keyboard shortcuts
+# true = opt out and use whole-clip batch transcription
+BATCH_MODE=false
+
+# Legacy override: auto, realtime, or batch
+TRANSCRIPTION_MODE=auto
+
+# Batch/offline transcription model
 MISTRAL_MODEL=voxtral-mini-latest
 #MISTRAL_BASE_URL=https://api.mistral.ai/v1
+
+# Realtime WebSocket transcription model
+MISTRAL_REALTIME_MODEL=voxtral-mini-transcribe-realtime-2602
+MISTRAL_REALTIME_DELAY_MS=480
+#MISTRAL_REALTIME_BASE_URL=wss://api.mistral.ai
 ```
 
 ### Groq
@@ -255,6 +271,10 @@ TRANSCRIPTION_PROVIDER=groq
 GROQ_API_KEY=your_api_key_here
 GROQ_MODEL=whisper-large-v3-turbo
 #GROQ_BASE_URL=https://api.groq.com/openai/v1
+
+# Groq does not support Mistral realtime WebSockets,
+# so it stays on provider batch/VAD behavior.
+BATCH_MODE=true
 ```
 
 ### Shared Online Settings
@@ -272,7 +292,7 @@ TRANSCRIPTION_MAX_RETRIES=3
 
 ### Local Whisper (whisper-rs)
 
-Run transcription locally without sending audio to external APIs. Models are downloaded from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp) in GGML format.
+Run transcription locally without sending audio to external APIs. Models are downloaded from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp) in GGML format. Local stream mode uses VAD chunks and defaults away from realtime because it keeps CPU/GPU work local.
 
 Local Whisper is optional at build time. Install it with:
 

@@ -11,6 +11,11 @@ pub struct Config {
     pub mistral_api_key: Option<String>,
     pub mistral_base_url: Option<String>,
     pub mistral_model: String,
+    pub mistral_realtime_model: String,
+    pub mistral_realtime_base_url: Option<String>,
+    pub mistral_realtime_delay_ms: u32,
+    pub transcription_mode: String,
+    pub batch_mode: bool,
     pub groq_api_key: Option<String>,
     pub groq_base_url: Option<String>,
     pub groq_model: String,
@@ -34,6 +39,11 @@ impl Default for Config {
             mistral_api_key: None,
             mistral_base_url: None,
             mistral_model: "voxtral-mini-latest".to_string(),
+            mistral_realtime_model: "voxtral-mini-transcribe-realtime-2602".to_string(),
+            mistral_realtime_base_url: None,
+            mistral_realtime_delay_ms: 480,
+            transcription_mode: "auto".to_string(),
+            batch_mode: false,
             groq_api_key: None,
             groq_base_url: None,
             groq_model: "whisper-large-v3-turbo".to_string(),
@@ -79,6 +89,24 @@ impl Config {
         config.mistral_base_url = std::env::var("MISTRAL_BASE_URL").ok();
         if let Ok(model) = std::env::var("MISTRAL_MODEL") {
             config.mistral_model = model;
+        }
+        if let Ok(model) = std::env::var("MISTRAL_REALTIME_MODEL") {
+            config.mistral_realtime_model = model;
+        }
+        config.mistral_realtime_base_url = std::env::var("MISTRAL_REALTIME_BASE_URL").ok();
+        if let Ok(delay) = std::env::var("MISTRAL_REALTIME_DELAY_MS") {
+            if let Ok(parsed) = delay.parse::<u32>() {
+                config.mistral_realtime_delay_ms = parsed;
+            }
+        }
+        if let Ok(mode) = std::env::var("TRANSCRIPTION_MODE") {
+            config.transcription_mode = mode;
+        }
+        if let Ok(enabled) = std::env::var("BATCH_MODE") {
+            config.batch_mode = matches!(
+                enabled.trim().to_lowercase().as_str(),
+                "true" | "1" | "yes" | "on"
+            );
         }
 
         config.groq_api_key = std::env::var("GROQ_API_KEY").ok();
@@ -203,6 +231,22 @@ impl Config {
         if self.transcription_timeout_seconds == 0 {
             return Err(anyhow::anyhow!(
                 "TRANSCRIPTION_TIMEOUT_SECONDS must be greater than 0"
+            ));
+        }
+
+        match self.transcription_mode.to_lowercase().as_str() {
+            "auto" | "realtime" | "batch" => {}
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Unsupported TRANSCRIPTION_MODE: {}. Supported modes: auto, realtime, batch",
+                    other
+                ));
+            }
+        }
+
+        if self.mistral_realtime_delay_ms == 0 {
+            return Err(anyhow::anyhow!(
+                "MISTRAL_REALTIME_DELAY_MS must be greater than 0"
             ));
         }
 

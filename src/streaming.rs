@@ -5,10 +5,15 @@ use crate::command;
 use crate::config::Config;
 use crate::transcription::{TranscriptionFactory, TranscriptionProvider};
 use crate::wav::WavEncoder;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use base64::Engine;
+use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::Message;
 
 // VAD constants
 const FRAME_MS: usize = 30; // 30ms frames
@@ -142,6 +147,17 @@ pub async fn run_stream(
     pipe_command: Option<&Vec<String>>,
     shutdown_rx: &mut tokio::sync::mpsc::Receiver<()>,
 ) -> Result<()> {
+    if should_use_mistral_realtime(config) {
+        return run_mistral_realtime_stream(config, pipe_command, shutdown_rx).await;
+    }
+
+    if config.transcription_mode.eq_ignore_ascii_case("realtime") {
+        eprintln!(
+            "⚠️  Realtime WebSocket STT is only available for Mistral; using batch/VAD streaming for {}",
+            config.transcription_provider
+        );
+    }
+
     eprintln!("🎙️  dictate stream mode — speak and text appears as you talk");
     eprintln!("   Press Super+R again or send SIGTERM to stop");
 
@@ -219,6 +235,169 @@ pub async fn run_stream(
     }
 
     eprintln!("✅ Stream mode exited");
+    Ok(())
+}
+
+fn should_use_mistral_realtime(config: &Config) -> bool {
+    config
+        .transcription_provider
+        .eq_ignore_ascii_case("mistral")
+        && !config.batch_mode
+        && !config.transcription_mode.eq_ignore_ascii_case("batch")
+}
+
+fn mistral_realtime_url(config: &Config) -> String {
+    let base = config
+        .mistral_realtime_base_url
+        .clone()
+        .or_else(|| config.mistral_base_url.clone())
+        .unwrap_or_else(|| "wss://api.mistral.ai".to_string())
+        .replace("https://", "wss://")
+        .replace("http://", "ws://")
+        .trim_end_matches("/v1")
+        .trim_end_matches('/')
+        .to_string();
+
+    format!(
+        "{}/v1/audio/transcriptions/realtime?model={}&target_streaming_delay_ms={}",
+        base, config.mistral_realtime_model, config.mistral_realtime_delay_ms
+    )
+}
+
+fn f32_samples_to_pcm_s16le(samples: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(samples.len() * 2);
+    for sample in samples {
+        let scaled = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+        bytes.extend_from_slice(&scaled.to_le_bytes());
+    }
+    bytes
+}
+
+async fn emit_text(text: &str, pipe_command: Option<&Vec<String>>) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+
+    if let Some(cmd) = pipe_command {
+        if let Err(e) = command::execute_with_input(cmd, text).await {
+            eprintln!("❌ Pipe command failed: {}", e);
+        }
+    } else {
+        print!("{}", text);
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+    }
+}
+
+async fn run_mistral_realtime_stream(
+    config: &Config,
+    pipe_command: Option<&Vec<String>>,
+    shutdown_rx: &mut tokio::sync::mpsc::Receiver<()>,
+) -> Result<()> {
+    let api_key = config
+        .mistral_api_key
+        .clone()
+        .ok_or_else(|| anyhow!("MISTRAL_API_KEY is required for Mistral realtime STT"))?;
+
+    eprintln!("🎙️  dictate realtime mode — Mistral WebSocket STT");
+    eprintln!("   Model: {}", config.mistral_realtime_model);
+    eprintln!("   Press the shortcut again, send SIGUSR1, or send SIGTERM to stop");
+
+    let beep_config = BeepConfig {
+        enabled: config.enable_audio_feedback,
+        volume: config.beep_volume,
+    };
+    let beep_player = BeepPlayer::new(beep_config)?;
+
+    let mut request = mistral_realtime_url(config).into_client_request()?;
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {}", api_key)
+            .parse()
+            .map_err(|e| anyhow!("Invalid auth header: {}", e))?,
+    );
+
+    let (ws_stream, _) = connect_async(request).await?;
+    let (mut ws_write, mut ws_read) = ws_stream.split();
+
+    let session_update = serde_json::json!({
+        "type": "session.update",
+        "session": {
+            "audio_format": {
+                "encoding": "pcm_s16le",
+                "sample_rate": 16000
+            }
+        }
+    });
+    ws_write
+        .send(Message::Text(session_update.to_string()))
+        .await?;
+
+    let mut recorder = AudioRecorder::new()?;
+    let audio_rx = recorder.start_continuous()?;
+    beep_player.play_async(BeepType::RecordingStart).await.ok();
+
+    let mut last_audio_time = Instant::now();
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                eprintln!("\n🛑 Realtime mode shutting down...");
+                ws_write.send(Message::Text(serde_json::json!({"type":"input_audio.flush"}).to_string())).await.ok();
+                ws_write.send(Message::Text(serde_json::json!({"type":"input_audio.end"}).to_string())).await.ok();
+                beep_player.play_async(BeepType::RecordingStop).await.ok();
+                break;
+            }
+            maybe_msg = ws_read.next() => {
+                match maybe_msg {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
+                            match event.get("type").and_then(|t| t.as_str()) {
+                                Some("transcription.text.delta") => {
+                                    if let Some(delta) = event.get("text").and_then(|t| t.as_str()) {
+                                        emit_text(delta, pipe_command).await;
+                                    }
+                                }
+                                Some("transcription.segment") => {
+                                    if let Some(segment) = event.get("text").and_then(|t| t.as_str()) {
+                                        eprintln!("\n📝 {}", segment.trim());
+                                    }
+                                }
+                                Some("error") => {
+                                    eprintln!("❌ Mistral realtime error: {}", event);
+                                    beep_player.play_async(BeepType::Error).await.ok();
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(e)) => return Err(e.into()),
+                    _ => {}
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                match audio_rx.recv_timeout(Duration::from_millis(30)) {
+                    Ok(chunk) => {
+                        last_audio_time = Instant::now();
+                        let pcm = f32_samples_to_pcm_s16le(&chunk);
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(pcm);
+                        let msg = serde_json::json!({"type":"input_audio.append", "audio": encoded});
+                        ws_write.send(Message::Text(msg.to_string())).await?;
+                    }
+                    Err(_) => {
+                        if last_audio_time.elapsed() > Duration::from_secs(30) {
+                            eprintln!("⚠️  No audio detected for 30s — mic may be muted or disconnected");
+                            last_audio_time = Instant::now();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    eprintln!("✅ Realtime mode exited");
     Ok(())
 }
 

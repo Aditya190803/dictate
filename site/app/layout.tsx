@@ -17,7 +17,7 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "dictate — Wayland Speech-to-Text",
   description:
-    "Press a keybind, speak, and get instant text output. A signal-driven CLI for Linux that transcribes audio via Mistral, Groq, or local Whisper and pipes text to stdout.",
+    "Press a keybind and get instant text output. A signal-driven CLI for Linux with Mistral realtime STT by default and BATCH_MODE as an opt-out.",
   keywords: [
     "speech-to-text", "wayland", "linux", "cli", "whisper",
     "dictation", "voice-to-text", "transcription", "rust", "pipewire",
@@ -25,7 +25,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "dictate — Wayland Speech-to-Text",
     description:
-      "Press a keybind, speak, get text. A signal-driven speech-to-text CLI for Wayland Linux desktops.",
+      "Press a keybind, speak, get text. Mistral realtime STT by default for Wayland Linux desktops.",
     type: "website",
     url: "https://dictate.adityamer.dev",
   },

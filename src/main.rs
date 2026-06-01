@@ -112,9 +112,21 @@ struct WizardOptions {
     #[arg(long)]
     groq_api_key: Option<String>,
 
-    /// Mistral model
+    /// Mistral batch/offline model
     #[arg(long)]
     mistral_model: Option<String>,
+
+    /// Mistral realtime WebSocket model
+    #[arg(long)]
+    mistral_realtime_model: Option<String>,
+
+    /// Transcription mode: auto, realtime, or batch
+    #[arg(long)]
+    transcription_mode: Option<String>,
+
+    /// Batch mode: true uses whole-clip transcription, false uses realtime where supported
+    #[arg(long)]
+    batch_mode: Option<String>,
 
     /// Groq model
     #[arg(long)]
@@ -196,7 +208,7 @@ fn ensure_config_file(path: &PathBuf) -> Result<()> {
     if !path.exists() {
         std::fs::write(
             path,
-            "TRANSCRIPTION_PROVIDER=mistral\nMISTRAL_MODEL=voxtral-mini-latest\nGROQ_MODEL=whisper-large-v3-turbo\nTRANSCRIPTION_LANGUAGE=auto\nTRANSCRIPTION_TIMEOUT_SECONDS=60\nTRANSCRIPTION_MAX_RETRIES=3\nENABLE_AUDIO_FEEDBACK=true\nBEEP_VOLUME=0.1\n",
+            "TRANSCRIPTION_PROVIDER=mistral\nBATCH_MODE=false\nTRANSCRIPTION_MODE=auto\nMISTRAL_MODEL=voxtral-mini-latest\nMISTRAL_REALTIME_MODEL=voxtral-mini-transcribe-realtime-2602\nMISTRAL_REALTIME_DELAY_MS=480\nGROQ_MODEL=whisper-large-v3-turbo\nTRANSCRIPTION_LANGUAGE=auto\nTRANSCRIPTION_TIMEOUT_SECONDS=60\nTRANSCRIPTION_MAX_RETRIES=3\nENABLE_AUDIO_FEEDBACK=true\nBEEP_VOLUME=0.1\n",
         )?;
     }
 
@@ -213,6 +225,13 @@ fn normalize_config_key(key: &str) -> String {
         "retries" | "max_retries" | "transcription_max_retries" => "TRANSCRIPTION_MAX_RETRIES",
         "mistral_key" | "mistral_api_key" => "MISTRAL_API_KEY",
         "mistral_model" => "MISTRAL_MODEL",
+        "mistral_realtime_model" | "realtime_model" => "MISTRAL_REALTIME_MODEL",
+        "mistral_realtime_base_url" | "realtime_base_url" => "MISTRAL_REALTIME_BASE_URL",
+        "mistral_realtime_delay" | "mistral_realtime_delay_ms" | "realtime_delay" => {
+            "MISTRAL_REALTIME_DELAY_MS"
+        }
+        "batch_mode" | "batch" => "BATCH_MODE",
+        "transcription_mode" | "stt_mode" => "TRANSCRIPTION_MODE",
         "mistral_base_url" => "MISTRAL_BASE_URL",
         "groq_key" | "groq_api_key" => "GROQ_API_KEY",
         "groq_model" => "GROQ_MODEL",
@@ -324,12 +343,30 @@ fn run_config_wizard(path: &PathBuf, options: &WizardOptions) -> Result<()> {
             if !key.is_empty() {
                 set_config_value(path, "mistral-api-key", &key)?;
             }
+            let batch_mode = option_or_prompt(
+                &options.batch_mode,
+                "Batch mode: whole-clip transcription instead of realtime (true/false)",
+                Some("false"),
+            )?;
+            set_config_value(path, "batch-mode", &batch_mode)?;
+            let mode = option_or_prompt(
+                &options.transcription_mode,
+                "Legacy transcription mode (auto/realtime/batch)",
+                Some("auto"),
+            )?;
+            set_config_value(path, "transcription-mode", &mode)?;
             let model = option_or_prompt(
                 &options.mistral_model,
-                "Mistral model",
+                "Mistral batch model",
                 Some("voxtral-mini-latest"),
             )?;
             set_config_value(path, "mistral-model", &model)?;
+            let realtime_model = option_or_prompt(
+                &options.mistral_realtime_model,
+                "Mistral realtime model",
+                Some("voxtral-mini-transcribe-realtime-2602"),
+            )?;
+            set_config_value(path, "mistral-realtime-model", &realtime_model)?;
         }
         "groq" => {
             let key = option_or_prompt(&options.groq_api_key, "Groq API key", None)?;
@@ -1148,17 +1185,24 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Mode selection
-    if args.stream {
-        // Stream mode: continuous VAD-based transcription
+    // Mode selection. BATCH_MODE=false is the default: Mistral uses realtime STT
+    // from the normal keyboard shortcut. BATCH_MODE=true opts into whole-clip batch.
+    let default_realtime = config
+        .transcription_provider
+        .eq_ignore_ascii_case("mistral")
+        && !config.batch_mode
+        && !config.transcription_mode.eq_ignore_ascii_case("batch");
+
+    if (args.stream && !config.batch_mode) || default_realtime {
         let (_shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel(1);
 
-        // Set up signal handler for graceful shutdown
+        // Set up signal handler for graceful shutdown. SIGUSR1 keeps the existing
+        // keyboard shortcut toggle working; SIGTERM remains available for process managers.
         #[cfg(not(test))]
         {
             let shutdown_tx = _shutdown_tx;
             tokio::spawn(async move {
-                let mut signals = Signals::new([SIGTERM]).unwrap();
+                let mut signals = Signals::new([SIGUSR1, SIGTERM]).unwrap();
                 if signals.next().await.is_some() {
                     let _ = shutdown_tx.send(()).await;
                 }

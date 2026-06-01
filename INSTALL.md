@@ -164,6 +164,7 @@ The wizard supports:
 - **Provider** — `mistral` (default), `groq`, or `local`
 - **API key** — your Mistral or Groq API key
 - **Model** — model name for the chosen provider
+- **Batch mode** — `false` by default for Mistral realtime; set `true` to use whole-clip batch transcription
 - **Language** — `auto` or an ISO code like `en`
 - **Output mode** — `type`, `clipboard`, or `stdout`
 - **Desktop** — `hyprland`, `niri`, `gnome`, `kde`, `sway`, or `other`
@@ -180,11 +181,25 @@ TRANSCRIPTION_PROVIDER=mistral
 
 # Mistral (default)
 MISTRAL_API_KEY=your_mistral_api_key_here
+
+# false = realtime by default for Mistral, including keyboard shortcuts
+# true = opt out and use whole-clip batch transcription
+BATCH_MODE=false
+
+# Legacy override: auto, realtime, or batch
+TRANSCRIPTION_MODE=auto
+
+# Batch/offline model
 MISTRAL_MODEL=voxtral-mini-latest
+
+# Realtime WebSocket model
+MISTRAL_REALTIME_MODEL=voxtral-mini-transcribe-realtime-2602
+MISTRAL_REALTIME_DELAY_MS=480
 
 # Groq
 # GROQ_API_KEY=your_groq_api_key_here
 # GROQ_MODEL=whisper-large-v3-turbo
+# Groq stream mode uses VAD chunking; it does not support Mistral realtime WebSockets.
 
 # Language (auto or ISO code like en)
 TRANSCRIPTION_LANGUAGE=auto
@@ -199,6 +214,7 @@ BEEP_VOLUME=0.1
 ```bash
 dictate config set provider groq
 dictate config set groq-model whisper-large-v3-turbo
+dictate config set batch-mode true
 dictate config set shortcut-key SUPER,R
 dictate config get
 dictate config edit

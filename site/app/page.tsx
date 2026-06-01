@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect } from "react";
 import Link from "next/link";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
@@ -37,7 +37,6 @@ const FEATURES = [
 ];
 
 export default function Home() {
-  const [mounted, setMounted] = useState(false);
   const containerRef = useRef<HTMLElement>(null);
 
   const heroH1Ref = useRef<HTMLHeadingElement>(null);
@@ -52,11 +51,7 @@ export default function Home() {
   const bentoRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  useEffect(() => {
-    if (!mounted || typeof window === "undefined") return;
+    if (typeof window === "undefined") return;
     const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (prefersReducedMotion) return;
 
@@ -111,7 +106,7 @@ export default function Home() {
     }, containerRef);
 
     return () => ctx.revert();
-  }, [mounted]);
+  }, []);
 
   return (
     <main ref={containerRef} className="overflow-x-hidden w-full max-w-full">
@@ -203,7 +198,7 @@ export default function Home() {
       <section className="sec" id="how">
         <div className="wrap">
           <div ref={howHeadRef} className="sec-head">
-            <span className="sec-head-label">// flow</span>
+            <span className="sec-head-label">{"// flow"}</span>
             <h2>How it works</h2>
             <p>A single UNIX signal controls the entire flow. No daemon polling, no wasted resources.</p>
           </div>
@@ -226,7 +221,7 @@ export default function Home() {
       <section className="sec" id="features">
         <div className="wrap">
           <div ref={featHeadRef} className="sec-head">
-            <span className="sec-head-label">// features</span>
+            <span className="sec-head-label">{"// features"}</span>
             <h2>Built for the terminal</h2>
             <p>A UNIX citizen. Composable. Zero runtime overhead when idle.</p>
           </div>

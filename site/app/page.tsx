@@ -1,88 +1,199 @@
+"use client";
+
+import { useRef, useEffect, useState } from "react";
 import Link from "next/link";
-import InstallSection from "./components/InstallSection";
-import ScrollReveal from "./components/ScrollReveal";
+import { gsap } from "gsap";
+import { ScrollTrigger } from "gsap/ScrollTrigger";
+import {
+  Lightning,
+  Plugs,
+  Broadcast,
+  Stack,
+  Monitor,
+  ShieldCheck,
+  Terminal,
+} from "@phosphor-icons/react";
 import CopyButton from "./components/CopyButton";
-import GSAPAnimations from "./components/GSAPAnimations";
 
-const INSTALL_MD_URL =
-  "https://dictate.adityamer.dev/INSTALL.md";
+gsap.registerPlugin(ScrollTrigger);
 
-const AGENT_PROMPT = `Read ${INSTALL_MD_URL} and follow it step by step to install and configure dictate on this machine. Ask me the setup questions first, then execute everything non-interactively using 'dictate config set'.`;
+const CURL_CMD = "curl -fsSL https://dictate.adityamer.dev/install.sh | sh";
+
+const AGENT_PROMPT = `Read https://dictate.adityamer.dev/INSTALL.md and follow it step by step to install and configure dictate on this machine. Ask me the setup questions first, then execute everything non-interactively using 'dictate config set'.`;
+
+const FLOW_STEPS = [
+  { num: "01", title: "Bind a key", desc: "Assign a keybind in your Wayland compositor. Hyprland, Niri, GNOME, KDE, Sway.", code: "bind = SUPER, R, exec, ..." },
+  { num: "02", title: "Speak", desc: "dictate records from PipeWire. A beep confirms recording has started.", code: "♫ recording started" },
+  { num: "03", title: "Signal", desc: "Press the keybind again. SIGUSR1 stops realtime or finishes a batch clip.", code: "pkill --signal SIGUSR1 dictate" },
+  { num: "04", title: "Get text", desc: "Transcribed text is piped to stdout. Send it to clipboard, type it, or pipe it anywhere.", code: "stdout → wl-copy | ydotool" },
+];
+
+const FEATURES = [
+  { icon: Lightning, title: "Signal-driven", desc: "SIGUSR1 triggers transcription. No polling, no wasted cycles. The process sleeps until you need it." },
+  { icon: Plugs, title: "Pipe anywhere", desc: "--pipe-to sends output to wl-copy, ydotool, sed, or any command. Compose however you like." },
+  { icon: Broadcast, title: "Realtime by default", desc: "Mistral Voxtral realtime WebSocket STT from the keyboard shortcut. BATCH_MODE=true opts out." },
+  { icon: Stack, title: "Multi-provider", desc: "Mistral (default), Groq, or local Whisper. Choose what works for your setup and privacy needs." },
+  { icon: Monitor, title: "Wayland native", desc: "PipeWire audio capture. Works with Hyprland, Niri, GNOME, KDE, Sway, and more." },
+  { icon: ShieldCheck, title: "Privacy option", desc: "Local Whisper mode. Your audio never leaves your machine. Download GGML models and transcribe offline." },
+];
 
 export default function Home() {
+  const [mounted, setMounted] = useState(false);
+  const containerRef = useRef<HTMLElement>(null);
+  const heroIconRef = useRef<HTMLDivElement>(null);
+  const heroH1Ref = useRef<HTMLHeadingElement>(null);
+  const heroDescRef = useRef<HTMLParagraphElement>(null);
+  const heroWaveformRef = useRef<HTMLDivElement>(null);
+  const heroInstallRef = useRef<HTMLDivElement>(null);
+  const heroAgentRef = useRef<HTMLDivElement>(null);
+  const heroScriptRef = useRef<HTMLDivElement>(null);
+  const howHeadRef = useRef<HTMLDivElement>(null);
+  const flowRef = useRef<HTMLDivElement>(null);
+  const featHeadRef = useRef<HTMLDivElement>(null);
+  const bentoRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!mounted || typeof window === "undefined") return;
+    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (prefersReducedMotion) return;
+
+    const ctx = gsap.context(() => {
+      // Left column: icon → h1 → desc → waveform
+      const heroTextEls = [heroIconRef.current, heroH1Ref.current, heroDescRef.current, heroWaveformRef.current].filter(Boolean);
+      if (heroTextEls.length > 0) {
+        gsap.fromTo(heroTextEls,
+          { opacity: 0, y: 32 },
+          { opacity: 1, y: 0, duration: 0.8, stagger: 0.12, ease: "power3.out", clearProps: "all" }
+        );
+      }
+
+      // Right column: install panel slides up with scale
+      if (heroInstallRef.current) {
+        gsap.fromTo(heroInstallRef.current,
+          { opacity: 0, y: 40, scale: 0.97 },
+          { opacity: 1, y: 0, scale: 1, duration: 0.9, delay: 0.3, ease: "power3.out", clearProps: "all" }
+        );
+      }
+
+      const heads = [howHeadRef.current, featHeadRef.current].filter(Boolean);
+      heads.forEach((el) => {
+        gsap.fromTo(el,
+          { opacity: 0, y: 20 },
+          { opacity: 1, y: 0, duration: 0.6, ease: "power2.out",
+            scrollTrigger: { trigger: el, start: "top 85%", toggleActions: "play none none none" },
+            clearProps: "all"
+          }
+        );
+      });
+
+      if (flowRef.current) {
+        gsap.fromTo(flowRef.current.children,
+          { opacity: 0, y: 28 },
+          { opacity: 1, y: 0, duration: 0.55, stagger: 0.12, ease: "power2.out",
+            scrollTrigger: { trigger: flowRef.current, start: "top 80%", toggleActions: "play none none none" },
+            clearProps: "all"
+          }
+        );
+      }
+
+      if (bentoRef.current) {
+        gsap.fromTo(bentoRef.current.children,
+          { opacity: 0, y: 20, scale: 0.97 },
+          { opacity: 1, y: 0, scale: 1, duration: 0.5, stagger: 0.08, ease: "power2.out",
+            scrollTrigger: { trigger: bentoRef.current, start: "top 80%", toggleActions: "play none none none" },
+            clearProps: "all"
+          }
+        );
+      }
+    }, containerRef);
+
+    return () => ctx.revert();
+  }, [mounted]);
+
   return (
-    <main className="overflow-x-hidden w-full max-w-full">
-      <GSAPAnimations />
+    <main ref={containerRef} className="overflow-x-hidden w-full max-w-full">
       {/* ── NAV ── */}
       <nav className="nav" id="nav">
         <Link href="/" className="nav-logo">dictate</Link>
         <div className="nav-links">
           <a href="#how" className="nav-link hm">How it works</a>
           <a href="#features" className="nav-link hm">Features</a>
-          <a
-            href="https://github.com/Aditya190803/dictate"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="nav-link"
-          >
-            GitHub
-          </a>
-          <a href="#install" className="nav-cta" id="nav-install">Install</a>
+          <a href="https://github.com/Aditya190803/dictate" target="_blank" rel="noopener noreferrer" className="nav-link">GitHub</a>
         </div>
       </nav>
 
-      {/* ── HERO — agent prompt as primary CTA ── */}
+      {/* ── HERO ── */}
       <header className="hero">
-        <div className="wrap">
-          <div className="hero-center">
-            <div className="hero-meta">
-              <span className="badge">Rust</span>
-              <span className="badge">PipeWire</span>
-              <span className="badge">Wayland</span>
+        {/* Decorative floating orbs */}
+        <div className="hero-orb" aria-hidden="true" />
+        <div className="hero-orb-sm" aria-hidden="true" />
+
+        <div className="wrap hero-wrap">
+          <div className="hero-text">
+            <div ref={heroIconRef} className="hero-icon">
+              <Terminal weight="duotone" size={44} color="var(--accent)" />
             </div>
 
-            <h1>
-              Voice to text,
-              <br />
+            <h1 ref={heroH1Ref}>
+              Voice to text,<br />
               from your <span>terminal.</span>
             </h1>
 
-            <p className="hero-desc">
-              <strong>dictate</strong> is a signal-driven CLI with Mistral
-              realtime STT by default. Keyboard shortcuts start realtime unless
-              you set BATCH_MODE=true for whole-clip batch. One keybind. Done.
+            <p ref={heroDescRef} className="hero-desc">
+              A signal-driven CLI for Wayland Linux. Mistral realtime STT by default.
+              One keybind. Speak. Get text. No GUI, no daemon.
             </p>
 
-            <div className="hero-prompt-section">
-              <p className="hero-prompt-label">
-                Give this prompt to your coding agent to install and setup dictate
-              </p>
-              <div className="prompt-block">
-                <div className="prompt-block-text">{AGENT_PROMPT}</div>
-                <CopyButton text={AGENT_PROMPT} label="copy prompt" id="hero-copy" />
+            {/* Waveform animation */}
+            <div ref={heroWaveformRef} className="hero-waveform">
+              <div className="waveform-bars">
+                {Array.from({ length: 8 }).map((_, i) => (
+                  <div key={i} className="waveform-bar" />
+                ))}
               </div>
-              <div className="hero-prompt-agents">
-                {["Claude Code", "Cursor", "Copilot", "Windsurf", "Gemini CLI"].map(
-                  (a) => (
-                    <span className="badge" key={a}>{a}</span>
-                  )
-                )}
+              <span className="waveform-label">voice → text</span>
+            </div>
+          </div>
+
+          <div ref={heroInstallRef} className="hero-install">
+            <div className="install-panel">
+              <div ref={heroAgentRef} className="install-section">
+                <div className="install-section-header">
+                  <span className="install-badge rec">recommended</span>
+                  <span className="install-section-title">AI agent</span>
+                </div>
+                <div className="install-prompt-block">
+                  <CopyButton text={AGENT_PROMPT} label="copy" id="hero-agent-copy" />
+                  <pre>{AGENT_PROMPT}</pre>
+                </div>
+                <div className="install-tags">
+                  {["Claude Code", "Cursor", "Copilot", "Windsurf", "Gemini CLI"].map((a) => (
+                    <span className="install-tag" key={a}>{a}</span>
+                  ))}
+                </div>
               </div>
-            </div>
 
-            <div className="hero-or">
-              <span className="hero-or-line" />
-              <span className="hero-or-text">or install manually</span>
-              <span className="hero-or-line" />
-            </div>
+              <div className="install-panel-divider" />
 
-            <div className="cmd-block">
-              <code>curl -fsSL https://dictate.adityamer.dev/install.sh | sh</code>
-              <CopyButton
-                text="curl -fsSL https://dictate.adityamer.dev/install.sh | sh"
-                label="copy"
-                id="hero-curl-copy"
-              />
+              <div ref={heroScriptRef} className="install-section">
+                <div className="install-section-header">
+                  <span className="install-badge alt">manual</span>
+                  <span className="install-section-title">Install script</span>
+                </div>
+                <div className="install-cmd-bar">
+                  <code>{CURL_CMD}</code>
+                  <CopyButton text={CURL_CMD} label="copy" id="hero-curl-copy" />
+                </div>
+                <div className="install-tags">
+                  {["Arch", "Ubuntu", "Fedora", "Debian", "openSUSE", "Alpine", "Void"].map((d) => (
+                    <span className="install-tag" key={d}>{d}</span>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -92,30 +203,21 @@ export default function Home() {
       <div className="sec-line" />
       <section className="sec" id="how">
         <div className="wrap">
-          <ScrollReveal>
-            <div className="sec-head">
-              <h2>How it works</h2>
-              <p>A single UNIX signal controls the entire flow. No daemon polling, no wasted resources.</p>
-            </div>
-          </ScrollReveal>
+          <div ref={howHeadRef} className="sec-head">
+            <h2>How it works</h2>
+            <p>A single UNIX signal controls the entire flow. No daemon polling, no wasted resources.</p>
+          </div>
 
-          <ScrollReveal stagger>
-            <div className="flow">
-              {[
-                { num: "01", title: "Bind a key", desc: "Assign a keybind in your Wayland compositor — Hyprland, Niri, GNOME, KDE.", code: "bind = SUPER, R, exec, ..." },
-                { num: "02", title: "Speak", desc: "dictate records from PipeWire. Audio beeps confirm recording start.", code: "♫ recording started" },
-                { num: "03", title: "Toggle", desc: "Press again. Mistral realtime stops on SIGUSR1; batch mode uses the same signal to finish a clip.", code: "pkill --signal SIGUSR1 dictate" },
-                { num: "04", title: "Get text", desc: "Transcribed text piped to stdout — clipboard, direct typing, or any command.", code: "stdout → wl-copy | ydotool" },
-              ].map((s) => (
-                <div className="flow-card reveal" key={s.num}>
-                  <div className="flow-num">{s.num}</div>
-                  <div className="flow-title">{s.title}</div>
-                  <div className="flow-desc">{s.desc}</div>
-                  <div className="flow-snippet">{s.code}</div>
-                </div>
-              ))}
-            </div>
-          </ScrollReveal>
+          <div ref={flowRef} className="flow">
+            {FLOW_STEPS.map((s) => (
+              <div className="flow-card" key={s.num}>
+                <div className="flow-num">{s.num}</div>
+                <div className="flow-title">{s.title}</div>
+                <div className="flow-desc">{s.desc}</div>
+                <div className="flow-snippet">{s.code}</div>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -123,121 +225,31 @@ export default function Home() {
       <div className="sec-line" />
       <section className="sec" id="features">
         <div className="wrap">
-          <ScrollReveal>
-            <div className="sec-head">
-              <h2>Built for the terminal</h2>
-              <p>A UNIX citizen. Composable. Zero runtime overhead when idle.</p>
-            </div>
-          </ScrollReveal>
+          <div ref={featHeadRef} className="sec-head">
+            <h2>Built for the terminal</h2>
+            <p>A UNIX citizen. Composable. Zero runtime overhead when idle.</p>
+          </div>
 
-          <ScrollReveal stagger>
-            <div className="bento">
-              {[
-                { title: "Signal-driven", desc: "SIGUSR1 triggers transcription. No polling, no wasted cycles. The process sleeps until you need it." },
-                { title: "Pipe anywhere", desc: "--pipe-to sends output to wl-copy, ydotool, sed, or any command. Compose however you like." },
-                { title: "Audio feedback", desc: "Musical beeps confirm recording start, stop, and success. Configurable volume or fully disabled." },
-                { title: "Realtime by default", desc: "Mistral uses Voxtral realtime WebSocket STT from the normal keyboard shortcut. BATCH_MODE=true opts out to whole-clip transcription." },
-                { title: "Multi-provider", desc: "Mistral (default), Groq, or local Whisper. Groq and local stream modes stay on VAD chunking because they do not use the Mistral realtime API." },
-                { title: "Wayland native", desc: "PipeWire audio capture. Works with Hyprland, Niri, GNOME, KDE, Sway, and more." },
-                { title: "Privacy option", desc: "Local Whisper mode — your audio never leaves your machine. Download GGML models and transcribe offline." },
-              ].map((f) => (
-                <div className="bento-card reveal" key={f.title}>
+          <div ref={bentoRef} className="bento">
+            {FEATURES.map((f) => {
+              const Icon = f.icon;
+              return (
+                <div className="bento-card" key={f.title}>
+                  <div className="bento-icon">
+                    <Icon weight="duotone" size={28} color="var(--accent)" />
+                  </div>
                   <div className="bento-t">{f.title}</div>
                   <div className="bento-d">{f.desc}</div>
                 </div>
-              ))}
-            </div>
-          </ScrollReveal>
-        </div>
-      </section>
-
-      {/* ── INSTALL (detailed) ── */}
-      <div className="sec-line" />
-      <section className="sec" id="install">
-        <div className="wrap">
-          <ScrollReveal>
-            <div className="sec-head">
-              <h2>Get started</h2>
-              <p>More ways to install and configure dictate.</p>
-            </div>
-          </ScrollReveal>
-
-          <ScrollReveal>
-            <InstallSection />
-          </ScrollReveal>
-        </div>
-      </section>
-
-      {/* ── REFERENCE ── */}
-      <div className="sec-line" />
-      <section className="sec" id="reference">
-        <div className="wrap">
-          <ScrollReveal>
-            <div className="sec-head">
-              <h2>Quick reference</h2>
-              <p>The commands you&apos;ll actually use.</p>
-            </div>
-          </ScrollReveal>
-
-          <ScrollReveal>
-            <div className="ref-grid">
-              <div className="ref-item">
-                <div className="ref-label">Copy to clipboard</div>
-                <div className="cmd-block">
-                  <code>dictate --pipe-to wl-copy</code>
-                  <CopyButton text="dictate --pipe-to wl-copy" label="copy" id="ref-1" />
-                </div>
-              </div>
-              <div className="ref-item">
-                <div className="ref-label">Type into focused window</div>
-                <div className="cmd-block">
-                  <code>dictate --pipe-to ydotool type --file -</code>
-                  <CopyButton text="dictate --pipe-to ydotool type --file -" label="copy" id="ref-2" />
-                </div>
-              </div>
-              <div className="ref-item">
-                <div className="ref-label">Trigger transcription</div>
-                <div className="cmd-block">
-                  <code>pkill --signal SIGUSR1 dictate</code>
-                  <CopyButton text="pkill --signal SIGUSR1 dictate" label="copy" id="ref-3" />
-                </div>
-              </div>
-              <div className="ref-item">
-                <div className="ref-label">Configure provider</div>
-                <div className="cmd-block">
-                  <code>dictate config set provider mistral</code>
-                  <CopyButton text="dictate config set provider mistral" label="copy" id="ref-4" />
-                </div>
-              </div>
-              <div className="ref-item">
-                <div className="ref-label">Force batch mode</div>
-                <div className="cmd-block">
-                  <code>dictate config set batch-mode true</code>
-                  <CopyButton text="dictate config set batch-mode true" label="copy" id="ref-batch" />
-                </div>
-              </div>
-              <div className="ref-item">
-                <div className="ref-label">Set API key</div>
-                <div className="cmd-block">
-                  <code>dictate config set mistral-api-key YOUR_KEY</code>
-                  <CopyButton text="dictate config set mistral-api-key YOUR_KEY" label="copy" id="ref-5" />
-                </div>
-              </div>
-              <div className="ref-item">
-                <div className="ref-label">Generate keybind</div>
-                <div className="cmd-block">
-                  <code>dictate shortcuts hyprland --mode type --key SUPER,R</code>
-                  <CopyButton text="dictate shortcuts hyprland --mode type --key SUPER,R" label="copy" id="ref-6" />
-                </div>
-              </div>
-            </div>
-          </ScrollReveal>
+              );
+            })}
+          </div>
         </div>
       </section>
 
       {/* ── FOOTER ── */}
       <footer className="foot">
-        <span>Rust · PipeWire · GPL-3.0</span>
+        <span>Rust · PipeWire · Wayland · GPL-3.0</span>
         <div className="foot-links">
           <a href="https://github.com/Aditya190803/dictate" target="_blank" rel="noopener noreferrer">GitHub</a>
           <a href="https://github.com/Aditya190803/dictate/releases" target="_blank" rel="noopener noreferrer">Releases</a>

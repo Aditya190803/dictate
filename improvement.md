@@ -1,361 +1,898 @@
-# Context-Aware Realtime STT Improvement Plan
+# Dictate v1.1.0 Context-Aware Dictation Editor Plan
 
-## Summary
+## Executive Summary
 
-Yes, this is possible, but it is no longer just speech-to-text. It becomes a realtime dictation editor: speech recognition plus an intent layer that understands correction commands and edits already-inserted text.
+Dictate v1.1.0 should turn realtime speech-to-text into a conservative, context-aware dictation editor. The goal is not to build a full text editor or perfectly sync with every application. The goal is to let users naturally correct recent dictated text with spoken commands while keeping ordinary dictation fast, predictable, and safe.
 
 Examples:
 
+- User dictates: `I will leave by 10 30 actually by 11`  
+  Desired output: `I will leave by 11`
+
+- User dictates a sentence, then says: `scratch that`  
+  Desired behavior: delete the last dictated sentence.
+
 - User says: `sorry remove that last line`  
-  App should delete the last dictated line/sentence from the target app.
+  Desired behavior: delete the last line Dictate inserted.
 
-- User says: `I will leave by 10 30 actually by 11`  
-  App should output: `I will leave by 11`
+This release should be treated as a **minor release** because it changes Dictate from raw STT output into a dictation assistant with state, intent detection, editing primitives, and safety policy.
 
-This should be planned as a larger release, likely **v1.1.0**, because it adds new product behavior, state management, command parsing, and editing primitives. A smaller **v1.0.5** could ship only low-risk realtime typing polish.
+---
 
-## Goals
+## Current Foundation Already Implemented
 
-1. Keep realtime typing fast and natural.
-2. Maintain a rolling context of dictated text.
-3. Detect spoken correction/editing intent.
-4. Convert correction intent into safe text edits.
-5. Apply edits in the focused app using keyboard operations.
-6. Avoid surprising destructive edits.
-7. Make behavior configurable for users who want plain STT only.
+The project now has the beginning of the v1.1.0 foundation:
 
-## Non-goals
+- `TypingBackend` abstraction in `src/typing.rs`.
+- `OutputBackend` for current stdout/pipe behavior.
+- `MockTypingBackend` for tests.
+- `TranscriptBuffer` in `src/transcript.rs`.
+- Conservative intent detection in `src/intent.rs`.
+- Basic edit planning/application in `src/editing.rs`.
+- Config fields:
+  - `REALTIME_OUTPUT_MODE=delta|stable`
+  - `CONTEXT_EDITING=false|true`
+  - `CONTEXT_EDITING_MODE=conservative`
+- Realtime stable segments can route through context editing.
+- VAD/batch stream segments can route through context editing.
+- Current supported spoken commands:
+  - `scratch that`
+  - `forget that`
+  - `delete last sentence`
+  - `remove last sentence`
+  - `delete last line`
+  - `remove last line`
+  - `delete last word`
+  - `delete last two words`
+  - `delete last three words`
 
-- Full document editing across arbitrary apps with perfect state sync.
-- Reconstructing text the user manually edited outside Dictate.
-- Replacing a full text editor or IDE integration.
-- Guaranteed perfect semantic correction for every natural-language phrase.
+This is a good foundation, but it is not yet a complete v1.1.0 context-aware release.
 
-## Proposed Release Split
+---
 
-### v1.0.5: Realtime typing polish
+## v1.1.0 Product Goal
 
-Scope:
+v1.1.0 should support **safe correction of recently dictated text** while preserving Dictate's core strengths:
 
-- Improve spacing and punctuation handling.
-- Reduce duplicate partial text.
-- Add configuration for typing separator behavior.
-- Improve logs and diagnostics for ydotool/wtype.
-- Keep current direct realtime transcription architecture.
+1. Fast realtime dictation.
+2. Predictable output.
+3. Low surprise.
+4. Minimal desktop assumptions.
+5. Easy fallback to plain STT.
+6. Clear limits when cursor/application state is unknown.
 
-This is a patch release if no new editing features are added.
+The release should default to safe behavior and require explicit opt-in for context-aware editing.
 
-### v1.1.0: Context-aware dictation editor
+Recommended default:
 
-Scope:
+```env
+REALTIME_OUTPUT_MODE=delta
+CONTEXT_EDITING=false
+CONTEXT_EDITING_MODE=conservative
+```
 
-- Rolling transcript buffer.
-- Spoken edit command detection.
-- Correction/rewrite engine.
-- Text edit application layer.
-- Configurable safety modes.
-- Integration tests for common correction phrases.
+Recommended context-aware setup:
 
-This is a minor release because it changes the product from raw STT into an editing assistant.
+```env
+REALTIME_OUTPUT_MODE=stable
+CONTEXT_EDITING=true
+CONTEXT_EDITING_MODE=conservative
+```
 
-## Architecture
+---
 
-### 1. Transcript Buffer
+## Non-Goals for v1.1.0
 
-Add an in-memory buffer that records what Dictate has typed during the current session.
+v1.1.0 should not attempt:
+
+- Full document understanding across arbitrary apps.
+- Perfect sync with text manually edited by the user.
+- Arbitrary middle-of-document edits.
+- Large destructive edits like `delete everything`.
+- Always-on LLM rewriting by default.
+- Application-specific editor plugins.
+- Accessibility-tree integration.
+- Clipboard-based range replacement unless the simple backend is already solid.
+
+Those can come later.
+
+---
+
+## Release Scope
+
+## Must Ship in v1.1.0
+
+### 1. Reliable stable output mode
+
+`REALTIME_OUTPUT_MODE=stable` must be reliable enough to be the recommended mode for context-aware editing.
+
+Requirements:
+
+- Do not type unstable realtime deltas in stable mode.
+- Type finalized segments only once.
+- Preserve natural spacing between finalized segments.
+- Avoid jamming words together.
+- Avoid double spaces around punctuation.
+- Keep perceived latency acceptable, ideally under 500–800ms after the provider finalizes text.
+
+### 2. Stronger transcript buffer
+
+The transcript buffer must become the session source of truth for text Dictate inserted.
 
 It should track:
 
-- Raw STT deltas.
-- Finalized segments.
-- Text actually typed into the target app.
-- Sentence/line boundaries.
-- Cursor assumptions.
+- Full emitted text.
+- Segment boundaries.
+- Whether a segment was inserted, deleted, or rejected.
 - Timestamps.
+- Finalized STT segment text.
+- Typed range for each segment.
 
-Example structure:
+Target structure:
 
 ```rust
-struct TranscriptBuffer {
+pub struct TranscriptBuffer {
     text: String,
     segments: Vec<TranscriptSegment>,
 }
 
-struct TranscriptSegment {
+pub struct TranscriptSegment {
     id: SegmentId,
     text: String,
-    started_at: Instant,
-    finalized_at: Option<Instant>,
+    kind: SegmentKind,
     typed_range: Range<usize>,
+    started_at: Option<Instant>,
+    finalized_at: Option<Instant>,
+}
+
+pub enum SegmentKind {
+    Inserted,
+    Deleted,
+    Command,
+    RejectedCommand,
 }
 ```
 
-This buffer is the app's best-effort model of the text it inserted. It should not claim to know about text typed manually by the user.
+The buffer must explicitly document that it only knows what Dictate typed during the current session.
 
-### 2. Intent Detection Layer
+### 3. Conservative spoken command detection
 
-Every finalized segment should pass through an intent detector before it is typed.
+Rule-based commands should be robust before any semantic/LLM work.
 
-Possible intents:
+Supported command groups:
+
+#### Delete last sentence
+
+Examples:
+
+- `scratch that`
+- `forget that`
+- `delete that`
+- `remove that`
+- `delete last sentence`
+- `remove last sentence`
+- `remove that sentence`
+
+Behavior:
+
+- Delete only the most recent dictated sentence.
+- Reject if no sentence exists.
+- Do not delete more than configured safety limit.
+
+#### Delete last line
+
+Examples:
+
+- `delete last line`
+- `remove last line`
+- `sorry remove that last line`
+- `scratch that line`
+
+Behavior:
+
+- Delete only the most recent dictated line.
+- Reject if no line exists.
+
+#### Delete last words
+
+Examples:
+
+- `delete last word`
+- `remove last word`
+- `delete last two words`
+- `delete last three words`
+- `delete last 5 words`
+
+Behavior:
+
+- Support numeric words and digits.
+- Enforce a maximum, for example 10 words.
+- Reject unsupported or excessive counts.
+
+#### Simple replacement commands
+
+Examples:
+
+- `actually eleven`
+- `actually by eleven`
+- `no six`
+- `no I mean six`
+- `I mean Friday`
+- `change five to six`
+- `replace five with six`
+
+Behavior:
+
+- Prefer exact recent phrase replacement when `from` is explicit.
+- For implicit corrections like `actually by eleven`, only target the most recent clause or phrase.
+- Reject if no safe target can be found.
+- Do not perform broad semantic rewrites in conservative mode.
+
+### 4. Structured edit model
+
+All correction behavior must pass through an explicit edit plan.
+
+Target model:
 
 ```rust
-enum DictationIntent {
-    InsertText(String),
-    ReplaceRecent { from: String, to: String },
-    DeleteLastSentence,
-    DeleteLastLine,
-    DeleteLastWords(usize),
-    RewriteRecent { instruction: String },
-    CommandRejected { reason: String },
+pub enum TextEdit {
+    Insert {
+        text: String,
+    },
+    DeleteSuffix {
+        range: Range<usize>,
+    },
+    ReplaceSuffix {
+        range: Range<usize>,
+        replacement: String,
+    },
+    Reject {
+        reason: String,
+    },
 }
 ```
 
-Detection can start with deterministic rules and later add an LLM option.
+v1.1.0 should prefer suffix-only edits because they are safest with generic keyboard backspacing.
 
-Rule examples:
+A planned edit must be validated before applying.
 
-- `sorry remove that last line` → `DeleteLastLine`
-- `delete last sentence` → `DeleteLastSentence`
-- `actually by 11` after `I will leave by 10 30` → replace the most recent time phrase.
-- `no I mean X` → rewrite recent phrase.
-- `scratch that` → delete last sentence or clause.
+Validation rules:
 
-### 3. Correction Engine
+- Edit range must exist in the transcript buffer.
+- Edit target must be at the current suffix, unless a future backend supports selection/clipboard replacement safely.
+- Delete length must be within `CONTEXT_EDITING_MAX_DELETE_CHARS`.
+- Replacement text must be non-empty for replacement operations.
+- Rejected commands must not be typed into the target app unless configured otherwise.
 
-The correction engine decides how an intent changes the transcript buffer.
+### 5. Safe edit application
 
-For simple commands:
+The edit applier should update the target app and transcript buffer consistently.
 
-- Delete last sentence.
-- Delete last line.
-- Delete last N words.
-- Replace exact recent phrase.
+For suffix deletion:
 
-For semantic commands:
+1. Compute character count, not byte count.
+2. Send backspace count through `TypingBackend`.
+3. Update transcript buffer only after backend succeeds.
 
-- Build a small context window from recent dictated text.
-- Ask an LLM or local rules to return a structured edit.
-- Validate the edit before applying it.
+For suffix replacement:
 
-The structured edit should be explicit, not free-form:
+1. Compute range.
+2. Backspace target range.
+3. Type replacement text.
+4. Update transcript buffer only after both backend operations succeed.
+
+Important Unicode requirement:
+
+- Use character counts for backspaces.
+- Tests must include Unicode words and punctuation.
+
+### 6. Backend abstraction hardening
+
+`TypingBackend` should be expanded enough for v1.1.0:
+
+```rust
+#[async_trait]
+pub trait TypingBackend: Send + Sync {
+    async fn type_text(&self, text: &str) -> Result<()>;
+    async fn backspace(&self, count: usize) -> Result<()>;
+}
+```
+
+Optional helper:
+
+```rust
+async fn replace_suffix(&self, delete_chars: usize, replacement: &str) -> Result<()> {
+    self.backspace(delete_chars).await?;
+    self.type_text(replacement).await
+}
+```
+
+Backends:
+
+- `OutputBackend`: current stdout/pipe behavior.
+- `MockTypingBackend`: test-only backend.
+- Future but not required for v1.1.0:
+  - `YdotoolBackend`
+  - `WtypeBackend`
+  - `ClipboardBackend`
+
+### 7. Configuration and safety controls
+
+Add these config values:
+
+```env
+CONTEXT_EDITING=false
+CONTEXT_EDITING_MODE=conservative
+CONTEXT_EDITING_MAX_DELETE_CHARS=300
+CONTEXT_EDITING_MAX_DELETE_WORDS=10
+CONTEXT_EDITING_TYPE_REJECTED_COMMANDS=false
+REALTIME_OUTPUT_MODE=delta
+```
+
+Meanings:
+
+- `CONTEXT_EDITING=false`: plain STT behavior.
+- `CONTEXT_EDITING_MODE=conservative`: rule-based edits only.
+- `CONTEXT_EDITING_MAX_DELETE_CHARS`: protects against large accidental deletions.
+- `CONTEXT_EDITING_MAX_DELETE_WORDS`: protects word-deletion commands.
+- `CONTEXT_EDITING_TYPE_REJECTED_COMMANDS=false`: rejected commands are not inserted by default.
+- `REALTIME_OUTPUT_MODE=stable`: recommended when context editing is enabled.
+
+Validation:
+
+- Reject unsupported modes.
+- Reject zero max delete chars/words.
+- Warn if `CONTEXT_EDITING=true` and `REALTIME_OUTPUT_MODE=delta` because command words may already be typed.
+
+### 8. User-facing diagnostics
+
+Context editing must be explainable.
+
+Log examples:
+
+```text
+🧠 Intent: DeleteLastSentence
+✂️  Deleted last sentence: 24 chars
+⚠️  Context edit rejected: no previous sentence to delete
+⚠️  Context editing works best with REALTIME_OUTPUT_MODE=stable
+```
+
+Logs should not expose API keys or sensitive config.
+
+### 9. Documentation
+
+Update:
+
+- `README.md`
+- `INSTALL.md`
+- `.env.example`
+- shortcut docs if relevant
+
+Docs must explain:
+
+- What context editing does.
+- How to enable it.
+- Why stable mode is recommended.
+- Supported commands.
+- Safety limitations.
+- Cursor drift limitation.
+- How to disable context editing.
+
+---
+
+## Should Ship if Time Allows
+
+### 1. Simple implicit replacement
+
+Support corrections like:
+
+```text
+the meeting is at five no six
+```
+
+Expected:
+
+```text
+the meeting is at six
+```
+
+Conservative implementation:
+
+- Detect `no <replacement>` only when the previous text ends with a short replaceable phrase.
+- Replace the last word or short phrase.
+- Reject if replacement target is unclear.
+
+### 2. Explicit phrase replacement
+
+Support:
+
+```text
+replace Tuesday with Thursday
+change five PM to six PM
+```
+
+Rules:
+
+- Search only recent transcript window.
+- Prefer the last exact match.
+- Only apply if match is within suffix-editable region.
+- Reject if multiple ambiguous matches exist outside the suffix.
+
+### 3. Session reset command
+
+Support:
+
+```text
+reset dictate context
+clear dictate context
+```
+
+Behavior:
+
+- Clear transcript buffer.
+- Do not edit target app.
+- Useful after user manually edits or moves cursor.
+
+---
+
+## Explicitly Defer Past v1.1.0
+
+### LLM semantic rewrite assistant
+
+Defer to v1.2.0 or later unless the rule-based version is fully stable.
+
+Potential future mode:
+
+```env
+CONTEXT_EDITING_MODE=assistant
+CONTEXT_EDITING_MIN_CONFIDENCE=0.80
+```
+
+Future examples:
+
+- `make that more formal`
+- `rewrite the last sentence to sound friendlier`
+- `change that to say I am unavailable tomorrow`
+
+If added later, the LLM must return structured JSON only:
 
 ```json
 {
-  "operation": "replace_range",
-  "old_text": "I will leave by 10 30",
-  "new_text": "I will leave by 11",
+  "operation": "replace_suffix",
+  "old_text": "I can come tomorrow",
+  "new_text": "I am unavailable tomorrow",
   "confidence": 0.91
 }
 ```
 
-Only apply edits above a confidence threshold, unless unsafe commands are explicitly enabled.
+The app should reject invalid JSON, low confidence, unrelated text, or non-suffix edits.
 
-### 4. Edit Application Layer
+### App-specific integrations
 
-Dictate currently types text using commands like:
+Defer:
 
-```bash
-ydotool type --file -
-```
+- editor plugins
+- browser extensions
+- accessibility tree integrations
+- compositor-specific selection APIs
+- clipboard-based arbitrary range replacement
 
-For editing, it also needs keyboard operations:
+---
 
-- Backspace N characters.
-- Select/delete previous sentence.
-- Select/delete previous line.
-- Replace recent text by deleting characters and typing replacement.
+## Detailed Implementation Plan
 
-The safest generic approach is character-based backspace from the transcript buffer:
+## Phase 1: Harden stable output mode
 
-1. Compute the suffix to remove.
-2. Send N backspaces.
-3. Type replacement text.
-4. Update transcript buffer.
+### Tasks
 
-This assumes the cursor is still after the text Dictate typed. If the user moves the cursor, edits may be wrong. Dictate should detect or warn about this limitation.
+- Audit Mistral realtime event handling.
+- Confirm which events are final and which are partial.
+- Ensure `REALTIME_OUTPUT_MODE=stable` only emits final segments.
+- Add spacing normalization between stable segments.
+- Add tests for stable segment joining.
 
-Longer term, support app-specific integrations:
+### Acceptance Criteria
 
-- Clipboard-based replacement.
-- Text editor plugins.
-- Accessibility APIs where available.
-- Compositor/input-method protocols if practical.
+- Stable mode does not emit deltas.
+- Stable mode does not duplicate final text.
+- Consecutive segments produce natural spacing.
+- Delta mode remains unchanged for users who want maximum immediacy.
 
-### 5. Typing Backend Abstraction
+---
 
-Create a typing backend trait instead of directly calling command execution everywhere.
+## Phase 2: Upgrade transcript buffer
+
+### Tasks
+
+- Add `TranscriptSegment` metadata.
+- Track inserted and deleted ranges.
+- Add helper methods:
+  - `append_segment`
+  - `last_sentence_range`
+  - `last_line_range`
+  - `last_words_range`
+  - `recent_window`
+  - `clear`
+- Add Unicode-aware range tests.
+
+### Acceptance Criteria
+
+- Buffer correctly tracks text after insertions and deletions.
+- Sentence, line, and word detection work with punctuation and whitespace.
+- Unicode words do not break range calculations.
+
+---
+
+## Phase 3: Expand intent detection
+
+### Tasks
+
+- Replace simple substring matching with command-pattern rules.
+- Normalize filler words like `sorry`, `please`, `um`, `uh`.
+- Add number parsing for word counts:
+  - `one`, `two`, `three`, etc.
+  - digits like `5`
+- Add explicit replacement intents:
+  - `replace X with Y`
+  - `change X to Y`
+- Add implicit replacement intents:
+  - `actually X`
+  - `no I mean X`
+  - `no X`
+- Add command rejection reasons.
+
+Target intent model:
 
 ```rust
-trait TypingBackend {
-    async fn type_text(&self, text: &str) -> Result<()>;
-    async fn backspace(&self, count: usize) -> Result<()>;
-    async fn delete_last_line(&self) -> Result<()>;
+pub enum DictationIntent {
+    InsertText(String),
+    DeleteLastSentence,
+    DeleteLastLine,
+    DeleteLastWords(usize),
+    ReplaceRecentExact { from: String, to: String },
+    ReplaceRecentImplicit { replacement: String },
+    ResetContext,
+    CommandRejected { reason: String },
 }
 ```
 
-Implementations:
+### Acceptance Criteria
 
-- `YdotoolBackend`
-- `CommandPipeBackend`
-- Future: `WtypeBackend`
-- Future: `ClipboardBackend`
+- Common correction phrases are detected.
+- Ordinary dictation is not misclassified.
+- Ambiguous commands are rejected safely.
+- Unit tests cover all supported command phrases.
 
-This makes context-aware editing testable without requiring a live desktop.
+---
 
-### 6. Realtime Output Policy
+## Phase 4: Implement replacement planning
 
-Realtime STT often emits partial deltas that later get corrected. There are two possible modes:
+### Tasks
 
-#### Low-latency mode
+- Add `ReplaceSuffix` edit variant.
+- Implement exact recent replacement.
+- Implement last-word implicit replacement.
+- Implement short recent-phrase implicit replacement only when safe.
+- Enforce max edit size.
+- Reject non-suffix matches.
 
-Type deltas immediately.
+### Acceptance Criteria
 
-Pros:
+- `replace five with six` works when `five` is recent and suffix-editable.
+- `change Tuesday to Thursday` works for recent suffix text.
+- `actually by eleven` can replace a recent matching phrase when safely identifiable.
+- Ambiguous replacements are rejected.
 
-- Feels realtime.
+---
 
-Cons:
+## Phase 5: Strengthen edit application
 
-- Harder to correct partial hypotheses.
-- May need backspaces when provider changes its mind.
+### Tasks
 
-#### Stable-segment mode
+- Apply replacement as backspace + type.
+- Update transcript only after backend success.
+- Add operation-level error handling.
+- Add logs for applied/rejected edits.
+- Add tests with `MockTypingBackend`.
 
-Only type finalized segments.
+### Acceptance Criteria
 
-Pros:
+- Failed backend operations do not corrupt transcript state.
+- Backspace count is character-based.
+- Replacement operation order is correct.
+- Rejections do not type command text by default.
 
-- Cleaner output.
-- Easier correction logic.
+---
 
-Cons:
+## Phase 6: Add safety config
 
-- Slightly less realtime.
+### Tasks
 
-Recommended default for v1.1.0:
+- Add config fields:
+  - `context_editing_max_delete_chars`
+  - `context_editing_max_delete_words`
+  - `context_editing_type_rejected_commands`
+- Add env parsing.
+- Add validation.
+- Add README and `.env.example` docs.
+- Print warning for context editing + delta mode.
 
-- Type stable chunks quickly, not every tiny unstable token.
-- Keep latency target under 500–800ms.
-- Allow `REALTIME_OUTPUT_MODE=delta|stable`.
+### Acceptance Criteria
 
-### 7. Safety Modes
+- Invalid safety config fails validation.
+- Defaults are conservative.
+- Users can fully disable context editing.
+- Docs include clear examples.
 
-Add config:
+---
 
-```env
-CONTEXT_EDITING=true
-CONTEXT_EDITING_MODE=conservative
-CONTEXT_EDITING_MIN_CONFIDENCE=0.80
-CONTEXT_EDITING_CONFIRM_DESTRUCTIVE=false
-REALTIME_OUTPUT_MODE=stable
+## Phase 7: Integration tests
+
+### Required Tests
+
+Use `MockTypingBackend` and direct calls to intent/edit modules.
+
+#### Delete sentence
+
+Input buffer:
+
+```text
+Hello world. This is wrong.
 ```
 
-Modes:
+Command:
 
-- `off`: plain STT only.
-- `conservative`: only obvious commands like delete last sentence/line and exact replacements.
-- `assistant`: allow semantic rewrites with LLM validation.
+```text
+scratch that
+```
 
-### 8. LLM/Provider Support
+Expected buffer:
 
-Semantic editing can use an LLM, but it must return structured JSON edits.
+```text
+Hello world. 
+```
 
-Provider options:
+Expected backend:
 
-- Mistral chat model using existing Mistral API key.
-- Groq chat model if configured.
-- Local model later.
+```text
+Backspace(14)
+```
 
-Prompt requirements:
+#### Delete line
 
-- Input: recent transcript, new utterance, cursor assumption.
-- Output: strict JSON edit operation.
-- Never invent unrelated text.
-- Reject ambiguous commands.
+Input buffer:
 
-### 9. Testing Plan
+```text
+first line
+second line
+```
 
-Unit tests:
+Command:
 
-- Intent parsing rules.
-- Transcript buffer updates.
-- Replace/delete range calculations.
-- Whitespace and punctuation normalization.
-- Confidence threshold behavior.
+```text
+remove last line
+```
 
-Integration tests with mock typing backend:
+Expected:
 
-- `I will leave by 10 30 actually by 11` → types final corrected sentence.
-- `write hello world sorry remove that last line` → deletes line.
-- `the meeting is at five no six` → replaces `five` with `six`.
-- Manual cursor moved simulation → command rejected or warning.
+```text
+first line
+```
 
-Manual desktop tests:
+#### Delete words
 
-- GNOME + ydotool.
-- Hyprland + ydotool/wtype if available.
-- Long dictation session.
-- Rapid start/stop with Super+R.
+Input buffer:
 
-## Implementation Phases
+```text
+one two three four
+```
 
-### Phase 1: Cleanup current realtime path
+Command:
 
-- Keep whitespace-preserving delta output.
-- Add a reusable typing abstraction.
-- Reduce noisy command logs in realtime mode.
-- Add config for output mode.
+```text
+delete last two words
+```
 
-### Phase 2: Transcript buffer
+Expected:
 
-- Track all emitted text.
-- Segment into sentences and lines.
-- Add tests for buffer operations.
+```text
+one two 
+```
 
-### Phase 3: Rule-based command detection
+#### Exact replacement
 
-- Detect common correction commands.
-- Support delete last line/sentence/word.
-- Support simple `actually X` replacements for recent clauses.
+Input buffer:
 
-### Phase 4: Edit backend
+```text
+meeting at five
+```
 
-- Implement backspace/delete/type primitives for ydotool.
-- Add mock backend tests.
-- Apply edits to both target app and transcript buffer.
+Command:
 
-### Phase 5: Semantic rewrite assistant
+```text
+replace five with six
+```
 
-- Add optional LLM structured edit provider.
-- Add confidence thresholds and rejection paths.
-- Add config flags and documentation.
+Expected:
 
-### Phase 6: Release v1.1.0
+```text
+meeting at six
+```
 
-- Update README and INSTALL docs.
-- Add examples and troubleshooting.
-- Tag release.
-- Publish binary/package updates.
+#### Rejected ambiguous command
 
-## Main Risks
+Input buffer:
 
-1. **Cursor drift**: Dictate cannot always know if the user moved the cursor.
-2. **Provider instability**: realtime deltas may change before finalization.
-3. **Unsafe edits**: natural-language commands can be ambiguous.
-4. **Desktop differences**: ydotool behavior may vary by compositor/session.
-5. **Latency vs correctness**: instant typing conflicts with semantic correction.
+```text
+five plus five
+```
 
-## Recommendation
+Command:
 
-Ship the current realtime daemon and spacing fixes as **v1.0.4**.
+```text
+replace five with six
+```
 
-Plan context-aware editing as **v1.1.0** because it introduces a new editing assistant layer, not just a bug fix.
+Expected:
 
-If a smaller step is desired first, ship **v1.0.5** with:
+- reject if not suffix-safe or if ambiguity policy requires rejection.
 
-- Better spacing/punctuation.
-- Stable segment output mode.
-- Typing backend abstraction.
-- Transcript buffer only, without semantic commands.
+#### Unicode backspace
 
-Then ship full context-aware commands in **v1.1.0**.
+Input buffer:
+
+```text
+café tomorrow
+```
+
+Command:
+
+```text
+delete last word
+```
+
+Expected:
+
+- backspace count equals character count of `tomorrow`.
+
+---
+
+## Phase 8: Manual desktop validation
+
+Test with:
+
+- terminal stdout mode
+- `ydotool type --file -`
+- browser text fields
+- chat apps
+- plain text editor
+- GNOME session
+- Hyprland session if available
+
+Manual scenarios:
+
+1. Plain realtime dictation in delta mode.
+2. Stable mode normal dictation.
+3. Stable mode with `scratch that`.
+4. Stable mode with `remove last line`.
+5. Stable mode with `delete last two words`.
+6. User moves cursor, then speaks correction command.
+7. User manually edits text, then speaks correction command.
+8. Long dictation session with many commands.
+9. Rapid start/stop daemon usage.
+
+Expected limitation:
+
+- Cursor movement cannot be fully detected with generic typing backends. Docs must tell users to run `reset dictate context` or restart dictation after manual edits/cursor movement.
+
+---
+
+## Risk Register
+
+## 1. Cursor drift
+
+Risk:
+
+- User moves cursor after Dictate types text. Backspace edits may affect the wrong location.
+
+Mitigation:
+
+- Only suffix edits.
+- Conservative docs.
+- Optional context reset command.
+- Future cursor-aware integrations.
+
+## 2. Realtime delta instability
+
+Risk:
+
+- Provider emits partial text that changes later.
+
+Mitigation:
+
+- Recommend stable mode for context editing.
+- Warn if context editing is enabled in delta mode.
+
+## 3. Accidental destructive commands
+
+Risk:
+
+- Normal speech misclassified as edit command.
+
+Mitigation:
+
+- Conservative command grammar.
+- Max delete limits.
+- Rejection over guessing.
+- Context editing off by default.
+
+## 4. Whitespace and punctuation edge cases
+
+Risk:
+
+- Deletes leave awkward spacing.
+
+Mitigation:
+
+- Normalize suffix ranges carefully.
+- Add punctuation/spacing tests.
+
+## 5. Desktop backend differences
+
+Risk:
+
+- Backspace or pipe behavior differs across environments.
+
+Mitigation:
+
+- Keep backend interface small.
+- Test with mock backend and real desktop flows.
+- Document supported setups.
+
+---
+
+## v1.1.0 Release Checklist
+
+Before tagging v1.1.0:
+
+- [ ] `REALTIME_OUTPUT_MODE=stable` is reliable.
+- [ ] Transcript buffer tracks segments and edits.
+- [ ] Delete sentence/line/word commands work.
+- [ ] Exact recent replacements work.
+- [ ] Implicit replacements are safe or deferred.
+- [ ] Safety config is implemented and documented.
+- [ ] Rejected commands are not typed by default.
+- [ ] Unicode backspace tests pass.
+- [ ] Integration tests pass with `MockTypingBackend`.
+- [ ] Manual desktop tests completed.
+- [ ] README updated.
+- [ ] INSTALL updated if setup/config changed.
+- [ ] `.env.example` updated.
+- [ ] Release notes clearly mention limitations.
+
+---
+
+## Recommended v1.1.0 Definition of Done
+
+v1.1.0 is ready when a user can enable:
+
+```env
+REALTIME_OUTPUT_MODE=stable
+CONTEXT_EDITING=true
+CONTEXT_EDITING_MODE=conservative
+```
+
+and reliably use:
+
+```text
+scratch that
+delete last sentence
+remove last line
+delete last two words
+replace five with six
+change Monday to Tuesday
+```
+
+without Dictate unexpectedly editing old text or making large destructive changes.
+
+The LLM-powered assistant should remain out of scope until the conservative editing layer is stable and well-tested.

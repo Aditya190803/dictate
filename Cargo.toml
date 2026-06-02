@@ -1,6 +1,6 @@
 [package]
 name = "dictate"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2021"
 description = "Speech-to-text tool for Wayland with stdout output"
 license = "GPL-3.0-or-later"
@@ -16,6 +16,7 @@ tokio = { version = "1.0", features = ["full"] }
 anyhow = "1.0"
 reqwest = { version = "0.12", features = ["multipart", "stream", "json"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 base64 = "0.22"
 signal-hook = "0.3"
 signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }

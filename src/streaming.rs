@@ -274,7 +274,8 @@ fn f32_samples_to_pcm_s16le(samples: &[f32]) -> Vec<u8> {
 }
 
 async fn emit_text(text: &str, pipe_command: Option<&Vec<String>>) {
-    let text = text.trim();
+    // Preserve whitespace in realtime deltas. Providers often send spaces as
+    // leading/trailing characters; trimming here makes typed words jam together.
     if text.is_empty() {
         return;
     }
@@ -295,6 +296,24 @@ async fn run_mistral_realtime_stream(
     pipe_command: Option<&Vec<String>>,
     shutdown_rx: &mut tokio::sync::mpsc::Receiver<()>,
 ) -> Result<()> {
+    run_mistral_realtime_inner(config, pipe_command, shutdown_rx, true, true).await
+}
+
+pub async fn run_mistral_realtime_daemon(
+    config: &Config,
+    pipe_command: Option<&Vec<String>>,
+    control_rx: &mut tokio::sync::mpsc::Receiver<()>,
+) -> Result<()> {
+    run_mistral_realtime_inner(config, pipe_command, control_rx, false, false).await
+}
+
+async fn run_mistral_realtime_inner(
+    config: &Config,
+    pipe_command: Option<&Vec<String>>,
+    control_rx: &mut tokio::sync::mpsc::Receiver<()>,
+    active_on_start: bool,
+    exit_on_signal: bool,
+) -> Result<()> {
     let api_key = config
         .mistral_api_key
         .clone()
@@ -302,7 +321,11 @@ async fn run_mistral_realtime_stream(
 
     eprintln!("🎙️  dictate realtime mode — Mistral WebSocket STT");
     eprintln!("   Model: {}", config.mistral_realtime_model);
-    eprintln!("   Press the shortcut again, send SIGUSR1, or send SIGTERM to stop");
+    if active_on_start {
+        eprintln!("   Press the shortcut again, send SIGUSR1, or send SIGTERM to stop");
+    } else {
+        eprintln!("   Warm daemon ready; press Super+R/SIGUSR1 to start or stop typing");
+    }
 
     let beep_config = BeepConfig {
         enabled: config.enable_audio_feedback,
@@ -336,18 +359,33 @@ async fn run_mistral_realtime_stream(
 
     let mut recorder = AudioRecorder::new()?;
     let audio_rx = recorder.start_continuous()?;
-    beep_player.play_async(BeepType::RecordingStart).await.ok();
+    if active_on_start {
+        beep_player.play_async(BeepType::RecordingStart).await.ok();
+    }
 
     let mut last_audio_time = Instant::now();
+    let mut active = active_on_start;
 
     loop {
         tokio::select! {
-            _ = shutdown_rx.recv() => {
-                eprintln!("\n🛑 Realtime mode shutting down...");
-                ws_write.send(Message::Text(serde_json::json!({"type":"input_audio.flush"}).to_string())).await.ok();
-                ws_write.send(Message::Text(serde_json::json!({"type":"input_audio.end"}).to_string())).await.ok();
-                beep_player.play_async(BeepType::RecordingStop).await.ok();
-                break;
+            _ = control_rx.recv() => {
+                if exit_on_signal {
+                    eprintln!("\n🛑 Realtime mode shutting down...");
+                    ws_write.send(Message::Text(serde_json::json!({"type":"input_audio.flush"}).to_string())).await.ok();
+                    ws_write.send(Message::Text(serde_json::json!({"type":"input_audio.end"}).to_string())).await.ok();
+                    beep_player.play_async(BeepType::RecordingStop).await.ok();
+                    break;
+                }
+
+                active = !active;
+                if active {
+                    eprintln!("\n▶️  Realtime typing started");
+                    beep_player.play_async(BeepType::RecordingStart).await.ok();
+                } else {
+                    eprintln!("\n⏹️  Realtime typing stopped");
+                    ws_write.send(Message::Text(serde_json::json!({"type":"input_audio.flush"}).to_string())).await.ok();
+                    beep_player.play_async(BeepType::RecordingStop).await.ok();
+                }
             }
             maybe_msg = ws_read.next() => {
                 match maybe_msg {
@@ -381,10 +419,12 @@ async fn run_mistral_realtime_stream(
                 match audio_rx.recv_timeout(Duration::from_millis(30)) {
                     Ok(chunk) => {
                         last_audio_time = Instant::now();
-                        let pcm = f32_samples_to_pcm_s16le(&chunk);
-                        let encoded = base64::engine::general_purpose::STANDARD.encode(pcm);
-                        let msg = serde_json::json!({"type":"input_audio.append", "audio": encoded});
-                        ws_write.send(Message::Text(msg.to_string())).await?;
+                        if active {
+                            let pcm = f32_samples_to_pcm_s16le(&chunk);
+                            let encoded = base64::engine::general_purpose::STANDARD.encode(pcm);
+                            let msg = serde_json::json!({"type":"input_audio.append", "audio": encoded});
+                            ws_write.send(Message::Text(msg.to_string())).await?;
+                        }
                     }
                     Err(_) => {
                         if last_audio_time.elapsed() > Duration::from_secs(30) {

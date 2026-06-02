@@ -1193,7 +1193,22 @@ async fn main() -> Result<()> {
         && !config.batch_mode
         && !config.transcription_mode.eq_ignore_ascii_case("batch");
 
-    if (args.stream && !config.batch_mode) || default_realtime {
+    if args.daemon && default_realtime {
+        let (_control_tx, mut control_rx) = tokio::sync::mpsc::channel(8);
+
+        #[cfg(not(test))]
+        {
+            let control_tx = _control_tx;
+            tokio::spawn(async move {
+                let mut signals = Signals::new([SIGUSR1]).unwrap();
+                while signals.next().await.is_some() {
+                    let _ = control_tx.send(()).await;
+                }
+            });
+        }
+
+        streaming::run_mistral_realtime_daemon(&config, args.pipe_to.as_ref(), &mut control_rx).await?;
+    } else if (args.stream && !config.batch_mode) || default_realtime {
         let (_shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel(1);
 
         // Set up signal handler for graceful shutdown. SIGUSR1 keeps the existing

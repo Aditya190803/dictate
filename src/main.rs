@@ -15,8 +15,12 @@ use anyhow::{anyhow, Result};
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use std::{io::Write, path::PathBuf, process::Command as ProcessCommand};
 
+#[cfg(not(test))]
+use std::fs::OpenOptions;
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
+#[cfg(not(test))]
+use tokio::process::{Child, Command as TokioCommand};
 
 use futures::stream::StreamExt;
 #[cfg(not(test))]
@@ -29,8 +33,12 @@ mod audio_processing;
 mod beep;
 mod command;
 mod config;
+mod editing;
+mod intent;
 mod streaming;
+mod transcript;
 mod transcription;
+mod typing;
 mod wav;
 
 #[cfg(test)]
@@ -68,6 +76,14 @@ struct Args {
     /// handle multiple SIGUSR1 recordings without reloading
     #[arg(long)]
     daemon: bool,
+
+    /// Toggle the running daemon using its pid file
+    #[arg(long)]
+    toggle: bool,
+
+    /// Stop the running daemon using its pid file
+    #[arg(long)]
+    stop_daemon: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -208,7 +224,7 @@ fn ensure_config_file(path: &PathBuf) -> Result<()> {
     if !path.exists() {
         std::fs::write(
             path,
-            "TRANSCRIPTION_PROVIDER=mistral\nBATCH_MODE=false\nTRANSCRIPTION_MODE=auto\nMISTRAL_MODEL=voxtral-mini-latest\nMISTRAL_REALTIME_MODEL=voxtral-mini-transcribe-realtime-2602\nMISTRAL_REALTIME_DELAY_MS=480\nGROQ_MODEL=whisper-large-v3-turbo\nTRANSCRIPTION_LANGUAGE=auto\nTRANSCRIPTION_TIMEOUT_SECONDS=60\nTRANSCRIPTION_MAX_RETRIES=3\nENABLE_AUDIO_FEEDBACK=true\nBEEP_VOLUME=0.1\n",
+            "TRANSCRIPTION_PROVIDER=mistral\nBATCH_MODE=false\nTRANSCRIPTION_MODE=auto\nMISTRAL_MODEL=voxtral-mini-latest\nMISTRAL_REALTIME_MODEL=voxtral-mini-transcribe-realtime-2602\nMISTRAL_REALTIME_DELAY_MS=480\nGROQ_MODEL=whisper-large-v3-turbo\nTRANSCRIPTION_LANGUAGE=auto\nTRANSCRIPTION_TIMEOUT_SECONDS=60\nTRANSCRIPTION_MAX_RETRIES=3\nREALTIME_OUTPUT_MODE=delta\nCONTEXT_EDITING_MAX_DELETE_CHARS=300\nCONTEXT_EDITING_MAX_DELETE_WORDS=10\nCONTEXT_EDITING_TYPE_REJECTED_COMMANDS=false\nENABLE_AUDIO_FEEDBACK=true\nBEEP_VOLUME=0.1\n",
         )?;
     }
 
@@ -239,6 +255,16 @@ fn normalize_config_key(key: &str) -> String {
         "local_model" | "whisper_model" => "WHISPER_MODEL",
         "audio_feedback" | "enable_audio_feedback" => "ENABLE_AUDIO_FEEDBACK",
         "beep_volume" => "BEEP_VOLUME",
+        "realtime_output_mode" | "realtime_output" => "REALTIME_OUTPUT_MODE",
+        "context_editing_max_delete_chars" | "max_delete_chars" => {
+            "CONTEXT_EDITING_MAX_DELETE_CHARS"
+        }
+        "context_editing_max_delete_words" | "max_delete_words" => {
+            "CONTEXT_EDITING_MAX_DELETE_WORDS"
+        }
+        "context_editing_type_rejected_commands" | "type_rejected_commands" => {
+            "CONTEXT_EDITING_TYPE_REJECTED_COMMANDS"
+        }
         "shortcut" | "shortcut_key" => "SHORTCUT_KEY",
         "desktop" | "shortcut_desktop" => "SHORTCUT_DESKTOP",
         "mode" | "output_mode" => "OUTPUT_MODE",
@@ -321,7 +347,7 @@ fn option_or_prompt(
 ) -> Result<String> {
     match value {
         Some(value) => Ok(value.clone()),
-        None => prompt(message, default),
+        Option::None => prompt(message, default),
     }
 }
 
@@ -463,7 +489,7 @@ fn run_config_command(command: &ConfigCommand, path: &PathBuf) -> Result<()> {
             if let Some(key) = key {
                 match read_config_value(path, key)? {
                     Some(value) => println!("{}", value),
-                    None => return Err(anyhow!("Config key '{}' is not set", key)),
+                    Option::None => return Err(anyhow!("Config key '{}' is not set", key)),
                 }
             } else if path.exists() {
                 print!("{}", std::fs::read_to_string(path)?);
@@ -492,18 +518,15 @@ fn run_config_command(command: &ConfigCommand, path: &PathBuf) -> Result<()> {
 
 fn shortcut_command(mode: &ShortcutMode) -> &'static str {
     match mode {
-        ShortcutMode::Stdout => "dictate",
-        ShortcutMode::Clipboard => "dictate --pipe-to wl-copy",
-        ShortcutMode::Type => "dictate --pipe-to ydotool type --file -",
+        ShortcutMode::Stdout => "dictate --stream",
+        ShortcutMode::Clipboard => "dictate --stream --pipe-to wl-copy",
+        ShortcutMode::Type => "dictate --stream --pipe-to ydotool type --file -",
     }
 }
 
 fn print_shortcut(args: &ShortcutArgs) {
     let command = shortcut_command(&args.mode);
-    let shell = format!(
-        "pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || ({} &)",
-        command
-    );
+    let shell = format!("dictate --toggle 2>/dev/null || ({} &)", command);
 
     match args.desktop {
         ShortcutDesktop::Hyprland => {
@@ -511,7 +534,7 @@ fn print_shortcut(args: &ShortcutArgs) {
             println!("# Dictate ({})", args.mode_name());
             println!("bind = {}, exec, {}", key, shell);
             println!("# Clipboard variant:");
-            println!("# bind = {} SHIFT, {}, exec, pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to wl-copy &)", 
+            println!("# bind = {} SHIFT, {}, exec, dictate --toggle 2>/dev/null || (dictate --stream --pipe-to wl-copy &)",
                 args.key.split(',').next().unwrap_or("SUPER"),
                 args.key.split(',').nth(1).unwrap_or("R"));
         }
@@ -522,7 +545,7 @@ fn print_shortcut(args: &ShortcutArgs) {
             println!("// Clipboard variant:");
             let mod_key = args.key.split(',').next().unwrap_or("Mod");
             let char_key = args.key.split(',').nth(1).unwrap_or("R");
-            println!("// Shift+{}+{} {{ spawn \"sh\" \"-c\" \"pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to wl-copy &)\"; }}", mod_key, char_key);
+            println!("// Shift+{}+{} {{ spawn \"sh\" \"-c\" \"dictate --toggle 2>/dev/null || (dictate --stream --pipe-to wl-copy &)\"; }}", mod_key, char_key);
         }
         ShortcutDesktop::Gnome => {
             println!("# GNOME Custom Shortcut");
@@ -927,6 +950,137 @@ async fn run_clip_mode(config: &Config, args: &Args) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(test))]
+struct DaemonLock {
+    path: PathBuf,
+}
+
+#[cfg(not(test))]
+impl Drop for DaemonLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(not(test))]
+fn daemon_pid_path() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir())
+        .join("dictate-daemon.pid")
+}
+
+#[cfg(not(test))]
+fn signal_daemon(signal: &str) -> Result<()> {
+    let path = daemon_pid_path();
+    let pid = std::fs::read_to_string(&path)
+        .map_err(|_| anyhow!("No running dictate daemon found at {}", path.display()))?;
+    let pid = pid.trim();
+    if pid.is_empty() {
+        return Err(anyhow!("Daemon pid file is empty: {}", path.display()));
+    }
+
+    let status = ProcessCommand::new("kill")
+        .arg(signal)
+        .arg(pid)
+        .status()
+        .map_err(|e| anyhow!("Failed to signal daemon pid {}: {}", pid, e))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "Failed to signal daemon pid {} with {}",
+            pid,
+            signal
+        ))
+    }
+}
+
+#[cfg(not(test))]
+fn acquire_daemon_lock() -> Result<DaemonLock> {
+    let path = daemon_pid_path();
+
+    if let Ok(pid_text) = std::fs::read_to_string(&path) {
+        if let Ok(pid) = pid_text.trim().parse::<u32>() {
+            let status = ProcessCommand::new("kill")
+                .arg("-0")
+                .arg(pid.to_string())
+                .status();
+            if status.is_ok_and(|s| s.success()) {
+                return Err(anyhow!(
+                    "dictate daemon is already running with pid {}. Use `pkill --signal SIGUSR1 dictate` to toggle it or `pkill --signal SIGTERM dictate` to stop it.",
+                    pid
+                ));
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| anyhow!("failed to create daemon lock {}: {}", path.display(), e))?;
+    writeln!(file, "{}", std::process::id())?;
+
+    Ok(DaemonLock { path })
+}
+
+/// Realtime daemon supervisor: stay resident for the shortcut, but run each
+/// recording as a fresh `dictate --stream` child. This keeps realtime WebSocket
+/// sessions one-shot and avoids trying to reuse a stream after `input_audio.end`.
+#[cfg(not(test))]
+async fn run_realtime_process_daemon(args: &Args, envfile: &std::path::Path) -> Result<()> {
+    eprintln!("🔄 dictate realtime daemon supervisor");
+    eprintln!("   Send SIGUSR1/Super+R to start or stop realtime dictation, SIGTERM to quit");
+
+    let exe = std::env::current_exe()?;
+    let mut signals = Signals::new([SIGUSR1, SIGTERM])?;
+    let mut child: Option<Child> = None;
+
+    while let Some(signal) = signals.next().await {
+        match signal {
+            SIGUSR1 => {
+                if let Some(mut running) = child.take() {
+                    eprintln!("\n⏹️  Stopping realtime child...");
+                    running.kill().await.ok();
+                    running.wait().await.ok();
+                    eprintln!("✅ Realtime child stopped");
+                    continue;
+                }
+
+                eprintln!("\n▶️  Starting realtime child...");
+                let mut cmd = TokioCommand::new(&exe);
+                cmd.arg("--envfile").arg(envfile).arg("--stream");
+                if let Some(pipe_to) = &args.pipe_to {
+                    cmd.arg("--pipe-to");
+                    cmd.args(pipe_to);
+                }
+
+                match cmd.spawn() {
+                    Ok(started) => {
+                        child = Some(started);
+                        eprintln!("🎤 Realtime dictation active");
+                    }
+                    Err(e) => eprintln!("❌ Failed to start realtime child: {}", e),
+                }
+            }
+            SIGTERM => {
+                eprintln!("\n🛑 Realtime daemon supervisor shutting down");
+                if let Some(mut running) = child.take() {
+                    running.kill().await.ok();
+                    running.wait().await.ok();
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
 /// Daemon clip mode: keep model loaded, loop recording/transcription on SIGUSR1
 #[cfg(not(test))]
 async fn run_daemon_clip_mode(config: &Config, args: &Args) -> Result<()> {
@@ -1132,9 +1286,25 @@ async fn process_clip_with_provider(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
 
     let envfile = args.envfile.clone().unwrap_or_else(get_default_config_path);
+
+    if args.toggle {
+        #[cfg(not(test))]
+        {
+            signal_daemon("-USR1")?;
+        }
+        return Ok(());
+    }
+
+    if args.stop_daemon {
+        #[cfg(not(test))]
+        {
+            signal_daemon("-TERM")?;
+        }
+        return Ok(());
+    }
 
     if let Some(command) = &args.command {
         match command {
@@ -1165,6 +1335,27 @@ async fn main() -> Result<()> {
         Config::from_env()
     };
 
+    // If no explicit --pipe-to, use OUTPUT_MODE from config
+    if args.pipe_to.is_none() {
+        args.pipe_to = match config.output_mode.as_str() {
+            "type" => Some(vec![
+                "ydotool".to_string(),
+                "type".to_string(),
+                "--file".to_string(),
+                "-".to_string(),
+            ]),
+            "clipboard" => Some(vec!["wl-copy".to_string()]),
+            "stdout" => None,
+            _ => {
+                eprintln!(
+                    "Warning: Unknown OUTPUT_MODE '{}', using stdout",
+                    config.output_mode
+                );
+                None
+            }
+        };
+    }
+
     if args.download_model {
         match download_model(&config.whisper_model).await {
             Ok(path) => {
@@ -1194,20 +1385,43 @@ async fn main() -> Result<()> {
         && !config.transcription_mode.eq_ignore_ascii_case("batch");
 
     if args.daemon && default_realtime {
-        let (_control_tx, mut control_rx) = tokio::sync::mpsc::channel(8);
-
         #[cfg(not(test))]
-        {
-            let control_tx = _control_tx;
-            tokio::spawn(async move {
-                let mut signals = Signals::new([SIGUSR1]).unwrap();
-                while signals.next().await.is_some() {
-                    let _ = control_tx.send(()).await;
-                }
-            });
-        }
+        let _daemon_lock = acquire_daemon_lock()?;
 
-        streaming::run_mistral_realtime_daemon(&config, args.pipe_to.as_ref(), &mut control_rx).await?;
+        if config.realtime_output_mode.eq_ignore_ascii_case("delta") {
+            let (_control_tx, mut control_rx) = tokio::sync::mpsc::channel(8);
+
+            #[cfg(not(test))]
+            {
+                let control_tx = _control_tx;
+                tokio::spawn(async move {
+                    let mut signals = Signals::new([SIGUSR1, SIGTERM]).unwrap();
+                    while let Some(signal) = signals.next().await {
+                        match signal {
+                            SIGUSR1 => {
+                                let _ = control_tx.send(()).await;
+                            }
+                            SIGTERM => {
+                                std::process::exit(0);
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+            }
+
+            streaming::run_mistral_realtime_daemon(&config, args.pipe_to.as_ref(), &mut control_rx)
+                .await?;
+        } else {
+            #[cfg(not(test))]
+            {
+                run_realtime_process_daemon(&args, &envfile).await?;
+            }
+            #[cfg(test)]
+            {
+                eprintln!("Realtime daemon mode not available in tests");
+            }
+        }
     } else if (args.stream && !config.batch_mode) || default_realtime {
         let (_shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel(1);
 
@@ -1229,6 +1443,7 @@ async fn main() -> Result<()> {
         // Daemon clip mode: keep model loaded, handle multiple recordings
         #[cfg(not(test))]
         {
+            let _daemon_lock = acquire_daemon_lock()?;
             run_daemon_clip_mode(&config, &args).await?;
         }
         #[cfg(test)]

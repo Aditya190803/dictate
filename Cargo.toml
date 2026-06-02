@@ -1,6 +1,6 @@
 [package]
 name = "dictate"
-version = "1.0.4"
+version = "1.0.5"
 edition = "2021"
 description = "Speech-to-text tool for Wayland with stdout output"
 license = "GPL-3.0-or-later"

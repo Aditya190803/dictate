@@ -358,7 +358,11 @@ async fn run_mistral_realtime_inner(
         .await?;
 
     let mut recorder = AudioRecorder::new()?;
-    let audio_rx = recorder.start_continuous()?;
+    let mut audio_rx = if active_on_start {
+        Some(recorder.start_continuous()?)
+    } else {
+        None
+    };
     if active_on_start {
         beep_player.play_async(BeepType::RecordingStart).await.ok();
     }
@@ -373,6 +377,8 @@ async fn run_mistral_realtime_inner(
                     eprintln!("\n🛑 Realtime mode shutting down...");
                     ws_write.send(Message::Text(serde_json::json!({"type":"input_audio.flush"}).to_string())).await.ok();
                     ws_write.send(Message::Text(serde_json::json!({"type":"input_audio.end"}).to_string())).await.ok();
+                    recorder.stop_recording().ok();
+                    drop(audio_rx.take());
                     beep_player.play_async(BeepType::RecordingStop).await.ok();
                     break;
                 }
@@ -380,10 +386,14 @@ async fn run_mistral_realtime_inner(
                 active = !active;
                 if active {
                     eprintln!("\n▶️  Realtime typing started");
+                    audio_rx = Some(recorder.start_continuous()?);
+                    last_audio_time = Instant::now();
                     beep_player.play_async(BeepType::RecordingStart).await.ok();
                 } else {
                     eprintln!("\n⏹️  Realtime typing stopped");
                     ws_write.send(Message::Text(serde_json::json!({"type":"input_audio.flush"}).to_string())).await.ok();
+                    recorder.stop_recording().ok();
+                    audio_rx = None;
                     beep_player.play_async(BeepType::RecordingStop).await.ok();
                 }
             }
@@ -416,20 +426,22 @@ async fn run_mistral_realtime_inner(
                 }
             }
             _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                match audio_rx.recv_timeout(Duration::from_millis(30)) {
-                    Ok(chunk) => {
-                        last_audio_time = Instant::now();
-                        if active {
-                            let pcm = f32_samples_to_pcm_s16le(&chunk);
-                            let encoded = base64::engine::general_purpose::STANDARD.encode(pcm);
-                            let msg = serde_json::json!({"type":"input_audio.append", "audio": encoded});
-                            ws_write.send(Message::Text(msg.to_string())).await?;
-                        }
-                    }
-                    Err(_) => {
-                        if last_audio_time.elapsed() > Duration::from_secs(30) {
-                            eprintln!("⚠️  No audio detected for 30s — mic may be muted or disconnected");
+                if let Some(rx) = audio_rx.as_ref() {
+                    match rx.recv_timeout(Duration::from_millis(30)) {
+                        Ok(chunk) => {
                             last_audio_time = Instant::now();
+                            if active {
+                                let pcm = f32_samples_to_pcm_s16le(&chunk);
+                                let encoded = base64::engine::general_purpose::STANDARD.encode(pcm);
+                                let msg = serde_json::json!({"type":"input_audio.append", "audio": encoded});
+                                ws_write.send(Message::Text(msg.to_string())).await?;
+                            }
+                        }
+                        Err(_) => {
+                            if last_audio_time.elapsed() > Duration::from_secs(30) {
+                                eprintln!("⚠️  No audio detected for 30s — mic may be muted or disconnected");
+                                last_audio_time = Instant::now();
+                            }
                         }
                     }
                 }

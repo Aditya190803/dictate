@@ -1207,7 +1207,8 @@ async fn main() -> Result<()> {
             });
         }
 
-        streaming::run_mistral_realtime_daemon(&config, args.pipe_to.as_ref(), &mut control_rx).await?;
+        streaming::run_mistral_realtime_daemon(&config, args.pipe_to.as_ref(), &mut control_rx)
+            .await?;
     } else if (args.stream && !config.batch_mode) || default_realtime {
         let (_shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel(1);
 

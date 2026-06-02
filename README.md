@@ -61,15 +61,6 @@ curl -fsSL https://dictate.adityamer.dev/install.sh | sh
 
 The installer detects common Linux package managers, installs/checks system dependencies, downloads the latest release binary when available, falls back to building from source, writes `~/.config/dictate/.env`, and prints shortcut snippets. See [`INSTALL.md`](INSTALL.md) for manual steps and a coding-agent prompt.
 
-### From AUR (Arch Linux)
-
-```bash
-# Using your preferred AUR helper
-yay -S dictate-bin
-# or
-paru -S dictate-bin
-```
-
 ### Download Binary
 
 1. Download from [GitHub Releases](https://github.com/Aditya190803/dictate/releases)
@@ -118,10 +109,10 @@ dictate --download-model
 dictate > output.txt
 
 # Start dictate and copy output to clipboard
-dictate --pipe-to wl-copy
+dictate --stream --pipe-to wl-copy
 
 # Start dictate and type output directly
-dictate --pipe-to ydotool type --file -
+dictate --stream --pipe-to ydotool type --file -
 
 # Trigger transcription (if dictate is running)
 pkill --signal SIGUSR1 dictate
@@ -131,10 +122,10 @@ pkill --signal SIGUSR1 dictate
 
 Most keybindings follow this pattern:
 ```bash
-pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate [OPTIONS] &)
+pgrep -x dictate >/dev/null && pkill --signal SIGTERM dictate || (dictate --stream [OPTIONS] &)
 ```
 
-This means: "If dictate is running, send signal to transcribe. Otherwise, start dictate with specified options."
+This means: "If dictate is running, stop it and release microphone access. Otherwise, start realtime dictation with the specified options."
 
 ## Keyboard Shortcuts Setup
 
@@ -144,10 +135,10 @@ Add to your `~/.config/hypr/hyprland.conf`:
 
 ```bash
 # dictate - Speech to Text (direct typing)
-bind = SUPER, R, exec, pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to ydotool type --file - &)
+bind = SUPER, R, exec, pgrep -x dictate >/dev/null && pkill --signal SIGTERM dictate || (dictate --stream --pipe-to ydotool type --file - &)
 
 # dictate - Speech to Text (clipboard copy)  
-bind = SUPER SHIFT, R, exec, pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to wl-copy &)
+bind = SUPER SHIFT, R, exec, pgrep -x dictate >/dev/null && pkill --signal SIGTERM dictate || (dictate --stream --pipe-to wl-copy &)
 ```
 
 ### Niri
@@ -157,10 +148,10 @@ Add to your `~/.config/niri/config.kdl`:
 ```kdl
 binds {
     // dictate - Speech to Text (direct typing)
-    Mod+R { spawn "sh" "-c" "pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to ydotool type --file - &)"; }
+    Mod+R { spawn "sh" "-c" "pgrep -x dictate >/dev/null && pkill --signal SIGTERM dictate || (dictate --stream --pipe-to ydotool type --file - &)"; }
     
     // dictate - Speech to Text (clipboard copy)
-    Mod+Shift+R { spawn "sh" "-c" "pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to wl-copy &)"; }
+    Mod+Shift+R { spawn "sh" "-c" "pgrep -x dictate >/dev/null && pkill --signal SIGTERM dictate || (dictate --stream --pipe-to wl-copy &)"; }
 }
 ```
 
@@ -188,11 +179,11 @@ The `--pipe-to` option allows you to pipe transcribed text directly to another c
 
 ```bash
 # Copy transcription to clipboard
-dictate --pipe-to wl-copy
+dictate --stream --pipe-to wl-copy
 pkill --signal SIGUSR1 dictate
 
 # Type transcription directly into focused window
-dictate --pipe-to ydotool type --file -
+dictate --stream --pipe-to ydotool type --file -
 pkill --signal SIGUSR1 dictate
 
 # Process transcription with sed and copy to clipboard
@@ -262,6 +253,16 @@ MISTRAL_MODEL=voxtral-mini-latest
 MISTRAL_REALTIME_MODEL=voxtral-mini-transcribe-realtime-2602
 MISTRAL_REALTIME_DELAY_MS=480
 #MISTRAL_REALTIME_BASE_URL=wss://api.mistral.ai
+
+# Realtime typing policy: delta or stable
+REALTIME_OUTPUT_MODE=delta
+
+# Context-aware editing is always on. Conservative spoken correction commands,
+# e.g. "scratch that" or "delete last line". Use REALTIME_OUTPUT_MODE=stable for
+# realtime WebSocket correction commands so command words are not typed as deltas first.
+CONTEXT_EDITING_MAX_DELETE_CHARS=300
+CONTEXT_EDITING_MAX_DELETE_WORDS=10
+CONTEXT_EDITING_TYPE_REJECTED_COMMANDS=false
 ```
 
 ### Groq

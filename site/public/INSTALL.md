@@ -96,15 +96,7 @@ chmod +x ~/.local/bin/dictate
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 ```
 
-### Option B: AUR (Arch Linux)
-
-```bash
-yay -S dictate-bin
-# or
-paru -S dictate-bin
-```
-
-### Option C: Build from Source
+### Option B: Build from Source
 
 ```bash
 # Clone the repository
@@ -349,10 +341,7 @@ rm -f ~/.local/bin/dictate
 rm -rf ~/.config/dictate
 rm -rf ~/.local/share/dictate
 
-# Remove AUR package (if installed via AUR)
-yay -R dictate-bin
-# or
-paru -R dictate-bin
+# Note: if you installed via a package manager, use its removal command instead
 ```
 
 ---

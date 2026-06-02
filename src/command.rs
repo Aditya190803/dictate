@@ -23,18 +23,15 @@ pub async fn execute_with_input(command_args: &[String], input: &str) -> Result<
         .spawn()
         .map_err(|e| anyhow!("Failed to execute command '{}': {}", command_name, e))?;
 
-    // Get stdin handle and write input
+    // Get stdin handle and write input. Some commands may exit before reading stdin
+    // (for example `false`), which closes the pipe early. In that case, continue
+    // waiting and report the command's real exit code instead of failing here.
     if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(input.as_bytes())
-            .await
-            .map_err(|e| anyhow!("Failed to write to command stdin: {}", e))?;
-
-        // Close stdin to signal EOF
-        stdin
-            .shutdown()
-            .await
-            .map_err(|e| anyhow!("Failed to close stdin: {}", e))?;
+        if let Err(e) = stdin.write_all(input.as_bytes()).await {
+            eprintln!("Command stdin closed before input was fully written: {}", e);
+        } else if let Err(e) = stdin.shutdown().await {
+            eprintln!("Command stdin closed before EOF could be sent: {}", e);
+        }
     } else {
         return Err(anyhow!("Failed to get stdin handle for command"));
     }

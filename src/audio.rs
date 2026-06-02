@@ -84,10 +84,11 @@ impl AudioRecorder {
             &config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 // Process audio data in the callback
-                if let Ok(mut audio_buffer) = buffer_clone.lock() {
+                if let Ok(mut audio_buffer) = buffer_clone.try_lock() {
                     // Manage buffer size
-                    if audio_buffer.len() + data.len() > MAX_BUFFER_SIZE {
-                        let samples_to_remove = (audio_buffer.len() + data.len()) - MAX_BUFFER_SIZE;
+                    let new_total = audio_buffer.len() + data.len();
+                    if new_total > MAX_BUFFER_SIZE {
+                        let samples_to_remove = new_total - MAX_BUFFER_SIZE;
                         if samples_to_remove < audio_buffer.len() {
                             audio_buffer.drain(0..samples_to_remove);
                         } else {
@@ -144,12 +145,19 @@ impl AudioRecorder {
 
         self.is_recording.store(false, Ordering::Relaxed);
 
-        // Stop and drop the stream
+        // Stop and explicitly drop the stream to release mic access
         if let Some(stream) = self.stream.take() {
             stream.pause()?;
+            drop(stream);
         }
 
-        self.device.take();
+        // Drop device to release resources
+        if let Some(device) = self.device.take() {
+            drop(device);
+        }
+
+        // Drop chunk sender to signal end of stream
+        self.chunk_sender = None;
 
         eprintln!("🛑 CPAL audio recording stopped");
         Ok(())

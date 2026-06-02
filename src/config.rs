@@ -31,6 +31,11 @@ pub struct Config {
     pub rust_log: String,
     pub enable_audio_feedback: bool,
     pub beep_volume: f32,
+    pub realtime_output_mode: String,
+    pub context_editing_max_delete_chars: usize,
+    pub context_editing_max_delete_words: usize,
+    pub context_editing_type_rejected_commands: bool,
+    pub output_mode: String,
 }
 
 impl Default for Config {
@@ -58,6 +63,11 @@ impl Default for Config {
             rust_log: "info".to_string(),
             enable_audio_feedback: true,
             beep_volume: 0.1,
+            realtime_output_mode: "delta".to_string(),
+            context_editing_max_delete_chars: 300,
+            context_editing_max_delete_words: 10,
+            context_editing_type_rejected_commands: false,
+            output_mode: "type".to_string(),
         }
     }
 }
@@ -171,6 +181,33 @@ impl Config {
             }
         }
 
+        if let Ok(mode) = std::env::var("REALTIME_OUTPUT_MODE") {
+            config.realtime_output_mode = mode;
+        }
+
+        if let Ok(max_chars) = std::env::var("CONTEXT_EDITING_MAX_DELETE_CHARS") {
+            if let Ok(parsed) = max_chars.parse::<usize>() {
+                config.context_editing_max_delete_chars = parsed;
+            }
+        }
+
+        if let Ok(max_words) = std::env::var("CONTEXT_EDITING_MAX_DELETE_WORDS") {
+            if let Ok(parsed) = max_words.parse::<usize>() {
+                config.context_editing_max_delete_words = parsed;
+            }
+        }
+
+        if let Ok(enabled) = std::env::var("CONTEXT_EDITING_TYPE_REJECTED_COMMANDS") {
+            config.context_editing_type_rejected_commands = matches!(
+                enabled.trim().to_lowercase().as_str(),
+                "true" | "1" | "yes" | "on"
+            );
+        }
+
+        if let Ok(mode) = std::env::var("OUTPUT_MODE") {
+            config.output_mode = mode.to_lowercase();
+        }
+
         config
     }
 
@@ -255,6 +292,32 @@ impl Config {
                 "BEEP_VOLUME must be between 0.0 and 1.0, got: {}",
                 self.beep_volume
             ));
+        }
+
+        match self.realtime_output_mode.to_lowercase().as_str() {
+            "delta" | "stable" => {}
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Unsupported REALTIME_OUTPUT_MODE: {}. Supported modes: delta, stable",
+                    other
+                ));
+            }
+        }
+
+        if self.context_editing_max_delete_chars == 0 {
+            return Err(anyhow::anyhow!(
+                "CONTEXT_EDITING_MAX_DELETE_CHARS must be greater than 0"
+            ));
+        }
+
+        if self.context_editing_max_delete_words == 0 {
+            return Err(anyhow::anyhow!(
+                "CONTEXT_EDITING_MAX_DELETE_WORDS must be greater than 0"
+            ));
+        }
+
+        if self.realtime_output_mode.eq_ignore_ascii_case("delta") {
+            eprintln!("⚠️  Context-aware editing works best with REALTIME_OUTPUT_MODE=stable; delta mode may type command words before they can be interpreted.");
         }
 
         Ok(())

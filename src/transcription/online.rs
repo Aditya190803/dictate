@@ -33,11 +33,13 @@ impl OnlineTranscriptionProvider {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(options.timeout_seconds))
             .build()
-            .map_err(|e| TranscriptionError::NetworkError(NetworkErrorDetails {
-                provider: options.provider_name.to_string(),
-                error_type: "HTTP client error".to_string(),
-                error_message: e.to_string(),
-            }))?;
+            .map_err(|e| {
+                TranscriptionError::NetworkError(NetworkErrorDetails {
+                    provider: options.provider_name.to_string(),
+                    error_type: "HTTP client error".to_string(),
+                    error_message: e.to_string(),
+                })
+            })?;
 
         Ok(Self { options, client })
     }
@@ -56,11 +58,13 @@ impl OnlineTranscriptionProvider {
         let audio_part = reqwest::multipart::Part::bytes(audio_data.to_vec())
             .file_name("audio.wav")
             .mime_str("audio/wav")
-            .map_err(|e| TranscriptionError::NetworkError(NetworkErrorDetails {
-                provider: self.options.provider_name.to_string(),
-                error_type: "HTTP client error".to_string(),
-                error_message: e.to_string(),
-            }))?;
+            .map_err(|e| {
+                TranscriptionError::NetworkError(NetworkErrorDetails {
+                    provider: self.options.provider_name.to_string(),
+                    error_type: "HTTP client error".to_string(),
+                    error_message: e.to_string(),
+                })
+            })?;
 
         let mut form = reqwest::multipart::Form::new()
             .part("file", audio_part)
@@ -123,9 +127,7 @@ impl OnlineTranscriptionProvider {
 
         let (error_code, error_message) = parse_error_body(&response_text);
 
-        if status == reqwest::StatusCode::UNAUTHORIZED
-            || status == reqwest::StatusCode::FORBIDDEN
-        {
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return Err(TranscriptionError::AuthenticationFailed {
                 provider: self.options.provider_name.to_string(),
                 details: Some(error_message),

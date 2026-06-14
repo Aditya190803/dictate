@@ -87,9 +87,18 @@ mod tests {
 
     #[test]
     fn parse_aliases() {
-        assert_eq!(DictateProfile::parse("live_typing"), Some(DictateProfile::LiveTyping));
-        assert_eq!(DictateProfile::parse("smart-paste"), Some(DictateProfile::SmartPaste));
-        assert_eq!(DictateProfile::parse("batch"), Some(DictateProfile::BatchClip));
+        assert_eq!(
+            DictateProfile::parse("live_typing"),
+            Some(DictateProfile::LiveTyping)
+        );
+        assert_eq!(
+            DictateProfile::parse("smart-paste"),
+            Some(DictateProfile::SmartPaste)
+        );
+        assert_eq!(
+            DictateProfile::parse("batch"),
+            Some(DictateProfile::BatchClip)
+        );
     }
 
     #[test]
@@ -98,5 +107,11 @@ mod tests {
             DictateProfile::from_env_legacy(None, true, "auto"),
             DictateProfile::BatchClip
         );
+    }
+
+    #[test]
+    fn smart_paste_uses_llm_polish() {
+        assert!(DictateProfile::SmartPaste.uses_llm_polish());
+        assert!(!DictateProfile::LiveTyping.uses_llm_polish());
     }
 }

@@ -1,8 +1,8 @@
 #[cfg(not(test))]
 use crate::command;
-use crate::text_processing::{apply_cleanup, CleanupConfig};
 #[cfg(not(test))]
 use crate::text_processing::CommandModeConfig;
+use crate::text_processing::{apply_cleanup, CleanupConfig};
 use anyhow::{anyhow, Result};
 
 #[cfg(not(test))]

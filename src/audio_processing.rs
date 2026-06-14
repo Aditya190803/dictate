@@ -100,10 +100,7 @@ impl AudioProcessor {
 
     /// Peak-normalize audio to 80% of maximum amplitude.
     pub fn normalize_audio(&self, samples: &[f32]) -> Vec<f32> {
-        let peak = samples
-            .iter()
-            .map(|&s| s.abs())
-            .fold(0.0f32, f32::max);
+        let peak = samples.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
 
         if peak == 0.0 {
             return samples.to_vec();

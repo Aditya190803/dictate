@@ -501,6 +501,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn polish_effective_enabled() {
+        let p = PolishConfig::default();
+        assert!(p.effective_enabled(true));
+        assert!(!p.effective_enabled(false));
+        let off = PolishConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        assert!(!off.effective_enabled(true));
+    }
+
+    #[test]
     fn empty_config_is_no_op() {
         let config = TextProcessingConfig::default();
         assert_eq!(process_text("hello world", &config), "hello world");

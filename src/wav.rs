@@ -31,8 +31,8 @@ impl WavEncoder {
             &file_size.to_le_bytes(),
             b"WAVE".as_ref(),
             b"fmt ".as_ref(),
-            &16u32.to_le_bytes(),      // fmt chunk size
-            &1u16.to_le_bytes(),        // PCM format
+            &16u32.to_le_bytes(), // fmt chunk size
+            &1u16.to_le_bytes(),  // PCM format
             &self.channels.to_le_bytes(),
             &self.sample_rate.to_le_bytes(),
             &byte_rate.to_le_bytes(),

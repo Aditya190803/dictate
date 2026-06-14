@@ -7,7 +7,6 @@ use crate::config_cli::{
 use anyhow::Result;
 use inquire::{Confirm, Select, Text};
 
-
 pub fn run_setup(quick: bool) -> Result<()> {
     let path = get_default_config_path();
     ensure_config_file(&path)?;
@@ -29,12 +28,9 @@ pub fn run_setup(quick: bool) -> Result<()> {
     let provider = if quick {
         "mistral".to_string()
     } else {
-        Select::new(
-            "Transcription provider",
-            vec!["mistral", "groq", "local"],
-        )
-        .prompt()?
-        .to_string()
+        Select::new("Transcription provider", vec!["mistral", "groq", "local"])
+            .prompt()?
+            .to_string()
     };
 
     set_config_value(&path, "provider", &provider)?;

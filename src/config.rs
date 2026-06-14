@@ -32,6 +32,7 @@ pub struct Config {
     pub mistral_realtime_base_url: Option<String>,
     pub mistral_realtime_delay_ms: u32,
     pub transcription_mode: String,
+    /// Legacy env flag; profile drives behavior but this is kept for compat and doctor.
     pub batch_mode: bool,
     pub groq_api_key: Option<String>,
     pub groq_base_url: Option<String>,
@@ -126,7 +127,12 @@ impl Config {
         /// Helper: read an env var as a boolean (true/1/yes/on).
         fn env_bool_or(name: &str, default: bool) -> bool {
             std::env::var(name)
-                .map(|v| matches!(v.trim().to_lowercase().as_str(), "true" | "1" | "yes" | "on"))
+                .map(|v| {
+                    matches!(
+                        v.trim().to_lowercase().as_str(),
+                        "true" | "1" | "yes" | "on"
+                    )
+                })
                 .unwrap_or(default)
         }
 
@@ -415,7 +421,9 @@ mod tests {
     fn test_missing_text_config_is_no_op() {
         let mut config = Config::default();
         let dir = tempfile::tempdir().unwrap();
-        config.load_text_config_file(dir.path().join("text.toml")).unwrap();
+        config
+            .load_text_config_file(dir.path().join("text.toml"))
+            .unwrap();
         assert_eq!(config.text_processing, TextProcessingConfig::default());
     }
 
@@ -432,7 +440,11 @@ mod tests {
 
         config.load_text_config_file(&path).unwrap();
         assert_eq!(
-            config.text_processing.dictionary.get("whisper flow").map(String::as_str),
+            config
+                .text_processing
+                .dictionary
+                .get("whisper flow")
+                .map(String::as_str),
             Some("Wispr Flow")
         );
         assert_eq!(config.text_processing.snippets.len(), 1);

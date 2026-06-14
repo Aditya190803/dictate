@@ -1,5 +1,7 @@
 //! Mistral chat completions to frame and polish whole utterances (smart paste).
 
+#![cfg_attr(test, allow(dead_code))]
+
 use crate::config::Config;
 use crate::text_processing::PolishConfig;
 use anyhow::{anyhow, Result};

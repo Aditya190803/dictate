@@ -165,13 +165,29 @@ fn play_beep_internal(beep_type: BeepType, volume: f32) -> Result<()> {
     let result = match config.sample_format() {
         cpal::SampleFormat::F32 => {
             let cb = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                fill_audio(data, sample_count, sample_rate, channels, volume, &flag, desc);
+                fill_audio(
+                    data,
+                    sample_count,
+                    sample_rate,
+                    channels,
+                    volume,
+                    &flag,
+                    desc,
+                );
             };
             device.build_output_stream(&config.into(), cb, err_cb, None)
         }
         cpal::SampleFormat::I16 => {
             let cb = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-                fill_audio(data, sample_count, sample_rate, channels, volume, &flag, desc);
+                fill_audio(
+                    data,
+                    sample_count,
+                    sample_rate,
+                    channels,
+                    volume,
+                    &flag,
+                    desc,
+                );
             };
             device.build_output_stream(&config.into(), cb, err_cb, None)
         }
@@ -311,7 +327,7 @@ mod tests {
     fn test_descriptor_wobble() {
         let desc = BeepDescriptor::from(BeepType::Error);
         assert!(desc.wobble(0.0).abs() < 0.001); // sin(0)
-        // sin(0.015625 * 8 * 2π) = sin(π/4) ≈ 0.707, then * 20 ≈ 14.14
+                                                 // sin(0.015625 * 8 * 2π) = sin(π/4) ≈ 0.707, then * 20 ≈ 14.14
         let expected = (0.015625 * 8.0 * 2.0 * std::f32::consts::PI).sin() * 20.0;
         assert!((desc.wobble(0.015625) - expected).abs() < 0.001);
 

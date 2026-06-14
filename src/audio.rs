@@ -50,7 +50,11 @@ impl AudioRecorder {
     }
 
     /// Create a recorder with explicit capture settings.
-    pub fn with_settings(sample_rate: u32, channels: u16, max_duration_seconds: usize) -> Result<Self> {
+    pub fn with_settings(
+        sample_rate: u32,
+        channels: u16,
+        max_duration_seconds: usize,
+    ) -> Result<Self> {
         if sample_rate == 0 {
             anyhow::bail!("sample_rate must be greater than 0");
         }

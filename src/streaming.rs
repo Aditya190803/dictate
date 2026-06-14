@@ -173,7 +173,8 @@ pub async fn run_stream(
 
     // Load transcription provider once (keeps model in memory for local)
     eprintln!("📦 Loading transcription provider...");
-    let provider = TranscriptionFactory::create_provider(&config.transcription_provider, config).await?;
+    let provider =
+        TranscriptionFactory::create_provider(&config.transcription_provider, config).await?;
     let provider: SharedProvider = Arc::new(tokio::sync::Mutex::new(provider));
     eprintln!("✅ Provider ready");
 
@@ -183,7 +184,8 @@ pub async fn run_stream(
 
     // Process segments through a bounded queue and a single worker.
     // This prevents task pile-ups when speaking continuously.
-    let (segment_tx, mut segment_rx) = tokio::sync::mpsc::channel::<Vec<f32>>(SEGMENT_QUEUE_CAPACITY);
+    let (segment_tx, mut segment_rx) =
+        tokio::sync::mpsc::channel::<Vec<f32>>(SEGMENT_QUEUE_CAPACITY);
     let provider_for_worker = Arc::clone(&provider);
     let worker_config = config.clone();
     let worker_pipe = pipe_command.cloned();
@@ -387,7 +389,8 @@ async fn run_mistral_realtime_inner(
             "⚠️  Mistral realtime requires 16kHz mono capture; overriding AUDIO_SAMPLE_RATE/AUDIO_CHANNELS for this mode"
         );
     }
-    let mut recorder = AudioRecorder::with_settings(16000, 1, config.audio_buffer_duration_seconds)?;
+    let mut recorder =
+        AudioRecorder::with_settings(16000, 1, config.audio_buffer_duration_seconds)?;
     let mut audio_rx = if active_on_start {
         Some(recorder.start_continuous()?)
     } else {

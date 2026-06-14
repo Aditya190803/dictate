@@ -185,7 +185,11 @@ mod tests {
         let result = execute_with_input(&command_args, input).await;
 
         // Command should execute but return exit code 1
-        assert!(result.is_ok(), "Command should execute successfully: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Command should execute successfully: {:?}",
+            result
+        );
         assert_eq!(result.unwrap(), 1);
     }
 }

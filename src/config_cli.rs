@@ -5,7 +5,7 @@ use crate::profile::DictateProfile;
 use anyhow::{anyhow, Result};
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 // ─── Data structures ─────────────────────────────────────────────────────────
@@ -107,7 +107,11 @@ fn prompt(label: &str, default: Option<&str>) -> Result<String> {
     }
 }
 
-fn option_or_prompt(value: &Option<String>, message: &str, default: Option<&str>) -> Result<String> {
+fn option_or_prompt(
+    value: &Option<String>,
+    message: &str,
+    default: Option<&str>,
+) -> Result<String> {
     match value {
         Some(v) => Ok(v.clone()),
         None => prompt(message, default),
@@ -118,10 +122,7 @@ fn option_or_prompt(value: &Option<String>, message: &str, default: Option<&str>
 
 pub fn get_default_config_path() -> PathBuf {
     dirs::config_dir()
-        .unwrap_or_else(|| {
-            std::env::var("HOME")
-                .map_or_else(|_| PathBuf::from("."), PathBuf::from)
-        })
+        .unwrap_or_else(|| std::env::var("HOME").map_or_else(|_| PathBuf::from("."), PathBuf::from))
         .join("dictate")
         .join(".env")
 }
@@ -325,8 +326,11 @@ fn run_config_wizard(path: &PathBuf, options: &WizardOptions) -> Result<()> {
         }
     }
 
-    let language =
-        option_or_prompt(&options.language, "Language (auto or ISO code)", Some("auto"))?;
+    let language = option_or_prompt(
+        &options.language,
+        "Language (auto or ISO code)",
+        Some("auto"),
+    )?;
     set_config_value(path, "language", &language)?;
 
     let default_output = if profile == "smart_paste" {
@@ -356,14 +360,26 @@ fn run_config_wizard(path: &PathBuf, options: &WizardOptions) -> Result<()> {
         "sway" => "Mod4+R",
         _ => "SUPER,R",
     };
-    let shortcut = option_or_prompt(&options.shortcut_key, "Shortcut key", Some(default_shortcut))?;
+    let shortcut = option_or_prompt(
+        &options.shortcut_key,
+        "Shortcut key",
+        Some(default_shortcut),
+    )?;
     set_config_value(path, "shortcut-key", &shortcut)?;
 
-    let af = option_or_prompt(&options.audio_feedback, "Audio feedback (true/false)", Some("true"))?;
+    let af = option_or_prompt(
+        &options.audio_feedback,
+        "Audio feedback (true/false)",
+        Some("true"),
+    )?;
     set_config_value(path, "audio-feedback", &af)?;
 
     if af.trim().eq_ignore_ascii_case("true") || options.beep_volume.is_some() {
-        let vol = option_or_prompt(&options.beep_volume, "Beep volume (0.0 to 1.0)", Some("0.1"))?;
+        let vol = option_or_prompt(
+            &options.beep_volume,
+            "Beep volume (0.0 to 1.0)",
+            Some("0.1"),
+        )?;
         set_config_value(path, "beep-volume", &vol)?;
     }
 
@@ -416,7 +432,7 @@ pub fn run_config_command(command: &ConfigCommand, path: &PathBuf) -> Result<()>
 
 // ─── Doctor ──────────────────────────────────────────────────────────────────
 
-pub fn run_doctor(config: &Config, env_path: &PathBuf) {
+pub fn run_doctor(config: &Config, env_path: &Path) {
     println!("dictate doctor\n");
 
     if env_path.exists() {
@@ -426,11 +442,32 @@ pub fn run_doctor(config: &Config, env_path: &PathBuf) {
         println!("  Run: dictate config wizard");
     }
 
-    println!("  Profile: {} — {}", config.profile.as_str(), config.profile.description());
+    println!(
+        "  Profile: {} ({}) — {}",
+        config.profile.label(),
+        config.profile.as_str(),
+        config.profile.description()
+    );
+    if config.profile.wants_daemon() {
+        println!("  Daemon recommended: dictate --daemon (shortcut snippets include this)");
+    }
+    if let Some(key) = &config.shortcut_key {
+        println!("  Shortcut key (saved): {key}");
+    }
+    if let Some(desktop) = &config.shortcut_desktop {
+        println!("  Shortcut desktop (saved): {desktop}");
+    }
+    if config.batch_mode || config.profile.implies_batch_stt() {
+        println!("  Batch STT path (profile or legacy BATCH_MODE)");
+    }
 
     match config.transcription_provider.to_lowercase().as_str() {
         "mistral" => {
-            if config.mistral_api_key.as_ref().is_some_and(|k| !k.is_empty()) {
+            if config
+                .mistral_api_key
+                .as_ref()
+                .is_some_and(|k| !k.is_empty())
+            {
                 println!("✓ MISTRAL_API_KEY is set");
             } else {
                 println!("✗ MISTRAL_API_KEY missing (required for Mistral)");
@@ -517,14 +554,17 @@ fn mode_name(mode: &ShortcutMode) -> &'static str {
 
 pub fn print_shortcut(args: &ShortcutArgs) {
     let cmd = shortcut_command(&args.mode, &args.profile);
-    let shell = format!(
-        "pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || ({cmd} &)"
-    );
+    let shell =
+        format!("pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || ({cmd} &)");
 
     match args.desktop {
         ShortcutDesktop::Hyprland => {
             let key = args.key.replace(',', ", ");
-            println!("# Dictate — profile {} ({})", args.profile, mode_name(&args.mode));
+            println!(
+                "# Dictate — profile {} ({})",
+                args.profile,
+                mode_name(&args.mode)
+            );
             println!("bind = {key}, exec, {shell}");
             if let Some(mod_part) = args.key.split(',').next() {
                 let char_part = args.key.split(',').nth(1).unwrap_or("R");
@@ -538,7 +578,11 @@ pub fn print_shortcut(args: &ShortcutArgs) {
         }
         ShortcutDesktop::Niri => {
             let key = args.key.replace(',', "+");
-            println!("// Dictate — profile {} ({})", args.profile, mode_name(&args.mode));
+            println!(
+                "// Dictate — profile {} ({})",
+                args.profile,
+                mode_name(&args.mode)
+            );
             println!("{key} {{ spawn \"sh\" \"-c\" \"{shell}\"; }}");
             if let Some(mod_part) = args.key.split(',').next() {
                 let char_part = args.key.split(',').nth(1).unwrap_or("R");

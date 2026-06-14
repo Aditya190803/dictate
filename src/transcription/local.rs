@@ -23,13 +23,10 @@ impl LocalWhisperProvider {
             TranscriptionError::ConfigurationError("Invalid model path (non-UTF-8)".to_string())
         })?;
 
-        let ctx =
-            WhisperContext::new_with_params(model_str, WhisperContextParameters::default())
-                .map_err(|e| {
-                    TranscriptionError::ConfigurationError(format!(
-                        "Failed to load model: {e}"
-                    ))
-                })?;
+        let ctx = WhisperContext::new_with_params(model_str, WhisperContextParameters::default())
+            .map_err(|e| {
+            TranscriptionError::ConfigurationError(format!("Failed to load model: {e}"))
+        })?;
 
         Ok(Self { context: ctx })
     }
@@ -51,8 +48,9 @@ impl TranscriptionProvider for LocalWhisperProvider {
             .map(|s| s.map(|v| f32::from(v) / f32::from(i16::MAX)))
             .collect();
 
-        let samples = samples
-            .map_err(|e| TranscriptionError::ConfigurationError(format!("WAV sample error: {e}")))?;
+        let samples = samples.map_err(|e| {
+            TranscriptionError::ConfigurationError(format!("WAV sample error: {e}"))
+        })?;
 
         let mut state = self.context.create_state().map_err(|e| {
             TranscriptionError::ApiError(ApiErrorDetails {

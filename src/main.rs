@@ -51,7 +51,7 @@ use profile::DictateProfile;
 #[cfg(not(test))]
 use text_processing::process_text;
 #[cfg(not(test))]
-use transcription::{TranscriptionFactory, SharedProvider};
+use transcription::{SharedProvider, TranscriptionFactory};
 #[cfg(not(test))]
 use wav::WavEncoder;
 
@@ -114,6 +114,7 @@ enum Commands {
 }
 
 /// Runtime args plus resolved pipe target (CLI or SHORTCUT_OUTPUT from config).
+#[cfg_attr(test, allow(dead_code))]
 struct ArgsWithPipe<'a> {
     base: &'a Args,
     pipe_to: Option<&'a Vec<String>>,
@@ -196,7 +197,8 @@ async fn finalize_transcribed_text(
     dictation_mode: &str,
 ) -> Result<String> {
     if command_mode_enabled {
-        return command_mode::run_command_mode(text, None, &config.text_processing.command_mode).await;
+        return command_mode::run_command_mode(text, None, &config.text_processing.command_mode)
+            .await;
     }
 
     let local = process_text(text, &config.text_processing);
@@ -241,7 +243,9 @@ async fn process_audio_for_transcription(
             beep_player.play_async(BeepType::Error).await.ok();
             if e.to_string().contains("too short") {
                 eprintln!("Tip: Speak for at least 0.1 seconds before sending signal");
-            } else if e.to_string().contains("only silence") || e.to_string().contains("no detectable signal") {
+            } else if e.to_string().contains("only silence")
+                || e.to_string().contains("no detectable signal")
+            {
                 eprintln!("Tip: Make sure your microphone is working and you're speaking clearly");
             }
             return Ok(1);
@@ -266,7 +270,8 @@ async fn process_audio_for_transcription(
 
     debug!("WAV encoded: {} bytes", wav_data.len());
 
-    let provider = TranscriptionFactory::create_provider(&config.transcription_provider, config).await?;
+    let provider =
+        TranscriptionFactory::create_provider(&config.transcription_provider, config).await?;
     info!("Sending to {} provider...", config.transcription_provider);
 
     let language = if config.transcription_language == "auto" {
@@ -286,21 +291,17 @@ async fn process_audio_for_transcription(
             }
 
             info!("Transcription: \"{text}\"");
-            let processed_text = match finalize_transcribed_text(
-                text,
-                config,
-                command_mode_enabled,
-                dictation_mode,
-            )
-            .await
-            {
-                Ok(t) => t,
-                Err(e) => {
-                    error!("Text processing failed: {e}");
-                    beep_player.play_async(BeepType::Error).await.ok();
-                    return Ok(1);
-                }
-            };
+            let processed_text =
+                match finalize_transcribed_text(text, config, command_mode_enabled, dictation_mode)
+                    .await
+                {
+                    Ok(t) => t,
+                    Err(e) => {
+                        error!("Text processing failed: {e}");
+                        beep_player.play_async(BeepType::Error).await.ok();
+                        return Ok(1);
+                    }
+                };
 
             if processed_text.is_empty() && config.profile == DictateProfile::SmartPaste {
                 beep_player.play_async(BeepType::Error).await.ok();
@@ -347,7 +348,10 @@ fn print_transcription_error_hint(e: &transcription::TranscriptionError) {
             eprintln!("  💡 Check your {provider} API key");
         }
         TranscriptionError::NetworkError(d) => {
-            eprintln!("  🌐 {}: {} - {}", d.provider, d.error_type, d.error_message);
+            eprintln!(
+                "  🌐 {}: {} - {}",
+                d.provider, d.error_type, d.error_message
+            );
         }
         TranscriptionError::ApiError(d) => {
             if let Some(s) = d.status_code {
@@ -391,11 +395,8 @@ async fn run_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Result<()> {
     let mut signals = Signals::new([SIGUSR1, SIGTERM])?;
 
     loop {
-        let sig = tokio::time::timeout(
-            tokio::time::Duration::from_millis(50),
-            signals.next(),
-        )
-        .await;
+        let sig =
+            tokio::time::timeout(tokio::time::Duration::from_millis(50), signals.next()).await;
 
         match sig {
             Ok(Some(SIGUSR1)) => {
@@ -477,7 +478,8 @@ async fn record_result(
 async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Result<()> {
     info!("Daemon mode — model stays loaded for multiple recordings");
 
-    let provider = TranscriptionFactory::create_provider(&config.transcription_provider, config).await?;
+    let provider =
+        TranscriptionFactory::create_provider(&config.transcription_provider, config).await?;
     let provider: SharedProvider = std::sync::Arc::new(tokio::sync::Mutex::new(provider));
     info!("Provider ready");
 
@@ -491,11 +493,8 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
     let mut is_recording = false;
 
     loop {
-        let sig = tokio::time::timeout(
-            tokio::time::Duration::from_millis(50),
-            signals.next(),
-        )
-        .await;
+        let sig =
+            tokio::time::timeout(tokio::time::Duration::from_millis(50), signals.next()).await;
 
         match sig {
             Ok(Some(SIGUSR1)) => {
@@ -524,12 +523,9 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
                                 command_mode_enabled: args.base.command_mode,
                                 dictation_mode: &args.base.dictation_mode,
                             };
-                            let result = process_with_provider(
-                                audio_data,
-                                config.audio_sample_rate,
-                                ctx,
-                            )
-                            .await;
+                            let result =
+                                process_with_provider(audio_data, config.audio_sample_rate, ctx)
+                                    .await;
 
                             recorder.clear_buffer().ok();
                             match result {
@@ -637,10 +633,12 @@ async fn process_with_provider(
                 }
 
                 if let Some(cmd) = ctx.pipe_command {
-                    command::execute_with_input(cmd, &processed_text).await.unwrap_or_else(|e| {
-                        error!("Pipe command failed: {e}");
-                        1
-                    })
+                    command::execute_with_input(cmd, &processed_text)
+                        .await
+                        .unwrap_or_else(|e| {
+                            error!("Pipe command failed: {e}");
+                            1
+                        })
                 } else {
                     println!("{processed_text}");
                     0
@@ -674,7 +672,10 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    let envfile = args.envfile.clone().unwrap_or_else(config_cli::get_default_config_path);
+    let envfile = args
+        .envfile
+        .clone()
+        .unwrap_or_else(config_cli::get_default_config_path);
 
     if let Some(command) = &args.command {
         match command {
@@ -699,7 +700,10 @@ async fn main() -> Result<()> {
         match Config::load_env_file(&envfile) {
             Ok(c) => c,
             Err(e) => {
-                warn!("Failed to load {}: {e}, falling back to env vars", envfile.display());
+                warn!(
+                    "Failed to load {}: {e}, falling back to env vars",
+                    envfile.display()
+                );
                 Config::from_env()
             }
         }
@@ -712,7 +716,10 @@ async fn main() -> Result<()> {
     config
         .load_text_config_file(&text_config_path)
         .unwrap_or_else(|e| {
-            error!("Failed to load text config {}: {e}", text_config_path.display());
+            error!(
+                "Failed to load text config {}: {e}",
+                text_config_path.display()
+            );
             std::process::exit(1);
         });
 
@@ -739,6 +746,8 @@ async fn main() -> Result<()> {
     }
 
     let pipe_to = config.resolve_pipe_to(args.pipe_to.as_ref());
+
+    #[cfg(not(test))]
     let args_with_pipe = ArgsWithPipe {
         base: &args,
         pipe_to,
@@ -757,7 +766,10 @@ async fn main() -> Result<()> {
         #[cfg(not(test))]
         run_daemon_clip_mode(&config, &args_with_pipe).await?;
         #[cfg(test)]
-        eprintln!("Daemon mode not available in tests");
+        {
+            let _ = (&config, pipe_to);
+            eprintln!("Daemon mode not available in tests");
+        }
     } else if args.stream || use_realtime {
         let (_shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel(1);
         #[cfg(not(test))]
@@ -768,7 +780,10 @@ async fn main() -> Result<()> {
         #[cfg(not(test))]
         run_clip_mode(&config, &args_with_pipe).await?;
         #[cfg(test)]
-        eprintln!("Test mode: Signal handling disabled");
+        {
+            let _ = (&config, pipe_to);
+            eprintln!("Test mode: Signal handling disabled");
+        }
     }
 
     Ok(())
@@ -781,10 +796,7 @@ async fn main() -> Result<()> {
 /// Each time one of the given signals is received, `()` is sent on the channel.
 /// Runs as a background task until the channel is closed.
 #[cfg(not(test))]
-fn spawn_signal_forwarder(
-    sender: tokio::sync::mpsc::Sender<()>,
-    signals: &[i32],
-) {
+fn spawn_signal_forwarder(sender: tokio::sync::mpsc::Sender<()>, signals: &[i32]) {
     let sigs = signals.to_vec();
     tokio::spawn(async move {
         let mut signal_stream = match Signals::new(&sigs) {

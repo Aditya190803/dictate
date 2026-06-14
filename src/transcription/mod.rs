@@ -103,9 +103,7 @@ impl TranscriptionFactory {
         match provider_type.to_lowercase().as_str() {
             "mistral" => {
                 let api_key = config.mistral_api_key.clone().ok_or_else(|| {
-                    TranscriptionError::ConfigurationError(
-                        "Mistral API key not found".to_string(),
-                    )
+                    TranscriptionError::ConfigurationError("Mistral API key not found".to_string())
                 })?;
 
                 Ok(online::OnlineProviderOptions {
@@ -123,9 +121,7 @@ impl TranscriptionFactory {
             }
             "groq" => {
                 let api_key = config.groq_api_key.clone().ok_or_else(|| {
-                    TranscriptionError::ConfigurationError(
-                        "Groq API key not found".to_string(),
-                    )
+                    TranscriptionError::ConfigurationError("Groq API key not found".to_string())
                 })?;
 
                 Ok(online::OnlineProviderOptions {
@@ -134,9 +130,10 @@ impl TranscriptionFactory {
                     timeout_seconds: config.transcription_timeout_seconds,
                     max_retries: config.transcription_max_retries,
                     model: config.groq_model.clone(),
-                    base_url: config.groq_base_url.clone().unwrap_or_else(|| {
-                        "https://api.groq.com/openai/v1".to_string()
-                    }),
+                    base_url: config
+                        .groq_base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.groq.com/openai/v1".to_string()),
                     auth_style: online::AuthStyle::Bearer,
                 })
             }
@@ -203,7 +200,10 @@ mod tests {
         );
 
         let error = TranscriptionError::FileTooLarge(30_000_000);
-        assert_eq!(error.to_string(), "File too large: 30000000 bytes (max 25MB)");
+        assert_eq!(
+            error.to_string(),
+            "File too large: 30000000 bytes (max 25MB)"
+        );
 
         let error = TranscriptionError::UnsupportedProvider("azure".to_string());
         assert_eq!(error.to_string(), "Unsupported provider: azure");
@@ -213,14 +213,20 @@ mod tests {
     async fn test_factory_unsupported_provider() {
         let config = crate::config::Config::default();
         let result = TranscriptionFactory::create_provider("unsupported", &config).await;
-        assert!(matches!(result, Err(TranscriptionError::UnsupportedProvider(_))));
+        assert!(matches!(
+            result,
+            Err(TranscriptionError::UnsupportedProvider(_))
+        ));
     }
 
     #[tokio::test]
     async fn test_factory_mistral_provider_missing_key() {
         let config = crate::config::Config::default();
         let result = TranscriptionFactory::create_provider("mistral", &config).await;
-        assert!(matches!(result, Err(TranscriptionError::ConfigurationError(_))));
+        assert!(matches!(
+            result,
+            Err(TranscriptionError::ConfigurationError(_))
+        ));
     }
 
     #[tokio::test]
@@ -241,7 +247,11 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(TranscriptionFactory::create_provider("Mistral", &config).await.is_ok());
-        assert!(TranscriptionFactory::create_provider("MISTRAL", &config).await.is_ok());
+        assert!(TranscriptionFactory::create_provider("Mistral", &config)
+            .await
+            .is_ok());
+        assert!(TranscriptionFactory::create_provider("MISTRAL", &config)
+            .await
+            .is_ok());
     }
 }

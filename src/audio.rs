@@ -1,143 +1,169 @@
-#![allow(clippy::cast_precision_loss)]
-#![allow(clippy::uninlined_format_args)]
-#![allow(clippy::unused_self)]
-#![allow(clippy::unnecessary_wraps)]
-
-use anyhow::{anyhow, Result};
+use anyhow::{Context, Result};
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Device, Stream, StreamConfig,
 };
+use log::{debug, error, info};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 
-const SAMPLE_RATE: u32 = 16000;
-const CHANNELS: u16 = 1;
+#[cfg(test)]
+const DEFAULT_SAMPLE_RATE: u32 = 16000;
+#[cfg(test)]
+const DEFAULT_CHANNELS: u16 = 1;
+#[cfg(test)]
+const DEFAULT_MAX_RECORDING_DURATION_SECONDS: usize = 300;
 
-// Memory management constants
-const MAX_RECORDING_DURATION_SECONDS: usize = 300; // 5 minutes max
-const MAX_BUFFER_SIZE: usize = SAMPLE_RATE as usize * MAX_RECORDING_DURATION_SECONDS;
-
+/// Captures audio from the default input device using CPAL.
+///
+/// Supports both clip mode (record → stop → retrieve) and continuous streaming.
 pub struct AudioRecorder {
     buffer: Arc<Mutex<Vec<f32>>>,
     is_recording: Arc<AtomicBool>,
     stream: Option<Stream>,
     device: Option<Device>,
-    chunk_sender: Option<Sender<Vec<f32>>>,
+    chunk_sender: Option<mpsc::Sender<Vec<f32>>>,
+    sample_rate: u32,
+    channels: u16,
+    max_buffer_size: usize,
 }
 
 impl AudioRecorder {
+    /// Create a new recorder with default settings (16kHz mono, 300s buffer).
+    #[cfg(test)]
     pub fn new() -> Result<Self> {
+        Self::with_settings(
+            DEFAULT_SAMPLE_RATE,
+            DEFAULT_CHANNELS,
+            DEFAULT_MAX_RECORDING_DURATION_SECONDS,
+        )
+    }
+
+    /// Create a recorder from runtime config.
+    pub fn from_config(config: &crate::config::Config) -> Result<Self> {
+        Self::with_settings(
+            config.audio_sample_rate,
+            config.audio_channels,
+            config.audio_buffer_duration_seconds,
+        )
+    }
+
+    /// Create a recorder with explicit capture settings.
+    pub fn with_settings(
+        sample_rate: u32,
+        channels: u16,
+        max_duration_seconds: usize,
+    ) -> Result<Self> {
+        if sample_rate == 0 {
+            anyhow::bail!("sample_rate must be greater than 0");
+        }
+        if channels == 0 {
+            anyhow::bail!("channels must be greater than 0");
+        }
+        if max_duration_seconds == 0 {
+            anyhow::bail!("max_duration_seconds must be greater than 0");
+        }
+
+        let max_buffer_size = sample_rate as usize * max_duration_seconds;
+
         Ok(Self {
             buffer: Arc::new(Mutex::new(Vec::new())),
             is_recording: Arc::new(AtomicBool::new(false)),
             stream: None,
             device: None,
             chunk_sender: None,
+            sample_rate,
+            channels,
+            max_buffer_size,
         })
     }
 
+    /// Audio channel capacity: 100 chunks ≈ 3 seconds of 30ms frames
+    const CHUNK_CHANNEL_CAPACITY: usize = 100;
+
+    /// Start recording from the default input device.
     pub fn start_recording(&mut self) -> Result<()> {
         if self.is_recording.load(Ordering::Relaxed) {
             return Ok(());
         }
 
-        // Get default host and input device
         let host = cpal::default_host();
         let device = host
             .default_input_device()
-            .ok_or_else(|| anyhow!("No default input device available"))?;
+            .context("No default input device available")?;
 
-        eprintln!(
-            "🎤 Using audio device: {}",
-            device.name().unwrap_or("Unknown".to_string())
-        );
-
-        // Get supported input config close to our target format
-        let mut supported_configs = device.supported_input_configs()?;
-        let _supported_config = supported_configs
-            .find(|config| {
-                config.channels() <= CHANNELS
-                    && config.min_sample_rate().0 <= SAMPLE_RATE
-                    && config.max_sample_rate().0 >= SAMPLE_RATE
-            })
-            .ok_or_else(|| anyhow!("No suitable audio format found"))?;
+        info!("Using audio device: {}", device.name().unwrap_or_default());
 
         let config = StreamConfig {
-            channels: CHANNELS,
-            sample_rate: cpal::SampleRate(SAMPLE_RATE),
+            channels: self.channels,
+            sample_rate: cpal::SampleRate(self.sample_rate),
             buffer_size: cpal::BufferSize::Default,
         };
 
-        eprintln!(
-            "📊 Audio config: {}Hz, {} channels",
-            config.sample_rate.0, config.channels
-        );
-
-        // Clone buffer for the stream callback
         let buffer_clone = Arc::clone(&self.buffer);
         let chunk_sender_clone = self.chunk_sender.clone();
+        let configured_channels = self.channels as usize;
+        let max_buffer_size = self.max_buffer_size;
 
-        // Create audio input stream
         let stream = device.build_input_stream(
             &config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                // Process audio data in the callback
-                if let Ok(mut audio_buffer) = buffer_clone.try_lock() {
-                    // Manage buffer size
-                    let new_total = audio_buffer.len() + data.len();
-                    if new_total > MAX_BUFFER_SIZE {
-                        let samples_to_remove = new_total - MAX_BUFFER_SIZE;
-                        if samples_to_remove < audio_buffer.len() {
-                            audio_buffer.drain(0..samples_to_remove);
+                let mono_chunk: Vec<f32> = if configured_channels == 1 {
+                    data.to_vec()
+                } else {
+                    data.chunks(configured_channels)
+                        .map(|frame| frame.iter().copied().sum::<f32>() / frame.len() as f32)
+                        .collect()
+                };
+
+                if let Ok(mut buf) = buffer_clone.try_lock() {
+                    let new_total = buf.len() + mono_chunk.len();
+                    if new_total > max_buffer_size {
+                        let excess = new_total - max_buffer_size;
+                        if excess < buf.len() {
+                            buf.drain(0..excess);
                         } else {
-                            audio_buffer.clear();
+                            buf.clear();
                         }
                     }
 
-                    let old_len = audio_buffer.len();
-                    audio_buffer.extend_from_slice(data);
-
-                    if old_len == 0 && !audio_buffer.is_empty() {
-                        eprintln!(
-                            "🎤 First audio samples captured! Got {} samples",
-                            data.len()
-                        );
+                    let was_empty = buf.is_empty();
+                    buf.extend_from_slice(&mono_chunk);
+                    if was_empty {
+                        debug!("First audio samples captured: {} samples", mono_chunk.len());
                     }
                 }
 
-                // Send chunks to stream consumer if in continuous mode
                 if let Some(ref sender) = chunk_sender_clone {
-                    let _ = sender.send(data.to_vec());
+                    // Non-blocking send — if the channel is full we drop the chunk;
+                    // this prevents backpressure on the real-time audio thread.
+                    let _ = sender.try_send(mono_chunk);
                 }
             },
-            |err| {
-                eprintln!("❌ Audio stream error: {}", err);
-            },
+            |err| error!("Audio stream error: {err}"),
             None,
         )?;
 
-        // Start the stream
         stream.play()?;
 
         self.is_recording.store(true, Ordering::Relaxed);
         self.stream = Some(stream);
         self.device = Some(device);
 
-        eprintln!("✅ CPAL audio recording started successfully");
+        info!("CPAL audio recording started successfully");
         Ok(())
     }
 
     /// Start continuous recording and return a receiver for audio chunks.
-    /// The chunks are also buffered for clip-mode retrieval.
-    pub fn start_continuous(&mut self) -> Result<Receiver<Vec<f32>>> {
-        let (tx, rx) = channel();
+    pub fn start_continuous(&mut self) -> Result<mpsc::Receiver<Vec<f32>>> {
+        let (tx, rx) = mpsc::channel(Self::CHUNK_CHANNEL_CAPACITY);
         self.chunk_sender = Some(tx);
         self.start_recording()?;
         Ok(rx)
     }
 
+    /// Stop recording and release audio resources.
     pub fn stop_recording(&mut self) -> Result<()> {
         if !self.is_recording.load(Ordering::Relaxed) {
             return Ok(());
@@ -145,52 +171,49 @@ impl AudioRecorder {
 
         self.is_recording.store(false, Ordering::Relaxed);
 
-        // Stop and explicitly drop the stream to release mic access.
         if let Some(stream) = self.stream.take() {
             stream.pause()?;
             drop(stream);
         }
 
-        // Drop the device handle and chunk sender so PipeWire/CPAL can close
-        // the capture node immediately after realtime/continuous mode stops.
-        if let Some(device) = self.device.take() {
-            drop(device);
-        }
+        // Drop device and chunk sender so PipeWire/CPAL can release the capture node.
+        drop(self.device.take());
         self.chunk_sender = None;
 
-        eprintln!("🛑 CPAL audio recording stopped");
+        debug!("Recording stopped");
         Ok(())
     }
 
+    /// Return a clone of the recorded audio buffer.
     pub fn get_audio_data(&self) -> Result<Vec<f32>> {
         let buffer = self
             .buffer
             .lock()
-            .map_err(|_| anyhow!("Failed to lock buffer"))?;
+            .map_err(|_| anyhow::anyhow!("Failed to lock audio buffer"))?;
         Ok(buffer.clone())
     }
 
+    /// Clear the recorded audio buffer.
     pub fn clear_buffer(&self) -> Result<()> {
         let mut buffer = self
             .buffer
             .lock()
-            .map_err(|_| anyhow!("Failed to lock buffer"))?;
+            .map_err(|_| anyhow::anyhow!("Failed to lock audio buffer"))?;
         buffer.clear();
         Ok(())
     }
 
+    /// Return the recording duration in seconds based on buffer length.
     pub fn get_recording_duration_seconds(&self) -> Result<f32> {
         let buffer = self
             .buffer
             .lock()
-            .map_err(|_| anyhow!("Failed to lock buffer"))?;
-        Ok(buffer.len() as f32 / SAMPLE_RATE as f32)
+            .map_err(|_| anyhow::anyhow!("Failed to lock audio buffer"))?;
+        Ok(buffer.len() as f32 / self.sample_rate as f32)
     }
 
-    // Method to process audio events (for compatibility with main loop)
+    /// No-op for compatibility with the main loop (CPAL runs callbacks in the background).
     pub fn process_audio_events(&self) -> Result<()> {
-        // CPAL handles audio processing in background threads
-        // This method is a no-op for compatibility
         Ok(())
     }
 }
@@ -208,132 +231,78 @@ mod tests {
 
     #[test]
     fn test_audio_recorder_creation() {
-        let recorder = AudioRecorder::new();
-        assert!(recorder.is_ok());
+        assert!(AudioRecorder::new().is_ok());
     }
 
     #[test]
     fn test_initial_state() {
         let recorder = AudioRecorder::new().unwrap();
-        let buffer_data = recorder.get_audio_data().unwrap();
-        assert_eq!(buffer_data.len(), 0);
+        assert_eq!(recorder.get_audio_data().unwrap().len(), 0);
     }
 
     #[test]
     fn test_buffer_operations() {
         let recorder = AudioRecorder::new().unwrap();
 
-        // Initially empty
-        let data = recorder.get_audio_data().unwrap();
-        assert_eq!(data.len(), 0);
-
-        // Clear empty buffer should work
+        assert_eq!(recorder.get_audio_data().unwrap().len(), 0);
         assert!(recorder.clear_buffer().is_ok());
-        let data = recorder.get_audio_data().unwrap();
-        assert_eq!(data.len(), 0);
-
-        // Get empty audio data
-        let data = recorder.get_audio_data().unwrap();
-        assert_eq!(data.len(), 0);
+        assert_eq!(recorder.get_audio_data().unwrap().len(), 0);
     }
 
     #[test]
     fn test_recording_lifecycle() {
         let mut recorder = AudioRecorder::new().unwrap();
-
-        // Multiple stop calls should not fail
         assert!(recorder.stop_recording().is_ok());
         assert!(recorder.stop_recording().is_ok());
     }
 
     #[test]
+    #[ignore = "requires an available audio input device"]
     fn test_cpal_recording_initialization() {
         let mut recorder = AudioRecorder::new().unwrap();
 
-        // This test attempts to start CPAL recording
-        // It may fail if no audio device is available
         match recorder.start_recording() {
             Ok(()) => {
-                // Let CPAL capture some data
                 std::thread::sleep(Duration::from_millis(100));
-
-                // Test audio event processing
                 for _ in 0..10 {
                     let _ = recorder.process_audio_events();
                     std::thread::sleep(Duration::from_millis(10));
                 }
-
-                // Stop recording
                 assert!(recorder.stop_recording().is_ok());
-
-                println!("CPAL recording test completed successfully");
+                println!("CPAL recording test succeeded");
             }
             Err(e) => {
-                // No audio device available - acceptable in test environments
-                println!("CPAL recording test skipped: {}", e);
+                println!("CPAL recording test skipped (no audio device): {e}");
             }
         }
     }
 
     #[test]
     fn test_audio_format_constants() {
-        assert_eq!(SAMPLE_RATE, 16000);
-        assert_eq!(CHANNELS, 1);
-        assert_eq!(MAX_RECORDING_DURATION_SECONDS, 300);
-        assert_eq!(MAX_BUFFER_SIZE, 16000 * 300);
+        assert_eq!(DEFAULT_SAMPLE_RATE, 16000);
+        assert_eq!(DEFAULT_CHANNELS, 1);
+        assert_eq!(DEFAULT_MAX_RECORDING_DURATION_SECONDS, 300);
     }
 
     #[test]
     fn test_memory_management() {
         let recorder = AudioRecorder::new().unwrap();
-
-        // Test buffer operations
-        let data = recorder.get_audio_data().unwrap();
-        assert_eq!(data.len(), 0);
-
-        // Test duration calculation on empty buffer
-        let duration = recorder.get_recording_duration_seconds().unwrap();
-        assert_eq!(duration, 0.0);
-
-        // Clear empty buffer
-        assert!(recorder.clear_buffer().is_ok());
-        let data = recorder.get_audio_data().unwrap();
-        assert_eq!(data.len(), 0);
-    }
-
-    #[test]
-    fn test_buffer_size_limit() {
-        let recorder = AudioRecorder::new().unwrap();
-
-        // Test that we can get recording duration (should be 0 for empty buffer)
+        assert_eq!(recorder.get_audio_data().unwrap().len(), 0);
         assert_eq!(recorder.get_recording_duration_seconds().unwrap(), 0.0);
-
-        // Test initial buffer size
-        let data = recorder.get_audio_data().unwrap();
-        assert_eq!(data.len(), 0);
+        assert!(recorder.clear_buffer().is_ok());
     }
 
     #[test]
     fn test_buffer_thread_safety() {
-        // Test that the buffer is thread-safe for data access
         let recorder = AudioRecorder::new().unwrap();
-
-        // Test buffer operations are thread-safe
-        let data = recorder.get_audio_data().unwrap();
-        assert_eq!(data.len(), 0);
-
-        // Test concurrent buffer reads
         let data1 = recorder.get_audio_data().unwrap();
         let data2 = recorder.get_audio_data().unwrap();
         assert_eq!(data1, data2);
-        assert_eq!(data1.len(), 0);
     }
 
     #[test]
     fn test_audio_processing_events() {
         let recorder = AudioRecorder::new().unwrap();
-
-        // Test that process_audio_events doesn't fail
         assert!(recorder.process_audio_events().is_ok());
     }
 }

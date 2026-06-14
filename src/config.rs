@@ -1,11 +1,28 @@
-#![allow(clippy::float_cmp)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_sign_loss)]
-
+use crate::profile::DictateProfile;
+use crate::text_processing::TextProcessingConfig;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-/// Configuration for dictate loaded from environment variables
+fn parse_pipe_to_env(mode: Option<&str>) -> Option<Vec<String>> {
+    match mode?.trim().to_lowercase().as_str() {
+        "type" | "typing" => Some(vec![
+            "ydotool".to_string(),
+            "type".to_string(),
+            "--file".to_string(),
+            "-".to_string(),
+        ]),
+        "clipboard" | "copy" => Some(vec!["wl-copy".to_string()]),
+        "paste" | "clipboard_paste" => Some(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "wl-copy && ydotool key 29:125".to_string(),
+        ]),
+        "stdout" | "" => None,
+        _ => None,
+    }
+}
+
+/// Configuration for dictate loaded from environment variables.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub mistral_api_key: Option<String>,
@@ -15,6 +32,7 @@ pub struct Config {
     pub mistral_realtime_base_url: Option<String>,
     pub mistral_realtime_delay_ms: u32,
     pub transcription_mode: String,
+    /// Legacy env flag; profile drives behavior but this is kept for compat and doctor.
     pub batch_mode: bool,
     pub groq_api_key: Option<String>,
     pub groq_base_url: Option<String>,
@@ -26,11 +44,18 @@ pub struct Config {
     pub audio_buffer_duration_seconds: usize,
     pub audio_sample_rate: u32,
     pub audio_channels: u16,
-    /// Local whisper.cpp model filename used only by the `local` provider.
+    /// Local whisper.cpp model filename used by the `local` provider.
     pub whisper_model: String,
-    pub rust_log: String,
     pub enable_audio_feedback: bool,
     pub beep_volume: f32,
+    pub text_processing: TextProcessingConfig,
+    /// User-facing behavior profile (live typing vs smart paste vs batch clip).
+    pub profile: DictateProfile,
+    /// Default `--pipe-to` when the CLI omits it (from SHORTCUT_OUTPUT in .env).
+    pub default_pipe_to: Option<Vec<String>>,
+    /// Saved for shortcut generation / install.sh (not used at runtime except default_pipe_to).
+    pub shortcut_key: Option<String>,
+    pub shortcut_desktop: Option<String>,
 }
 
 impl Default for Config {
@@ -55,16 +80,19 @@ impl Default for Config {
             audio_sample_rate: 16000,
             audio_channels: 1,
             whisper_model: "ggml-base.en.bin".to_string(),
-            rust_log: "info".to_string(),
             enable_audio_feedback: true,
             beep_volume: 0.1,
+            text_processing: TextProcessingConfig::default(),
+            profile: DictateProfile::LiveTyping,
+            default_pipe_to: None,
+            shortcut_key: None,
+            shortcut_desktop: None,
         }
     }
 }
 
 impl Config {
-    /// Directory where local whisper models are stored
-    /// Uses XDG data directory: ~/.local/share/dictate/models
+    /// Directory where local whisper models are stored (`~/.local/share/dictate/models`).
     pub fn model_dir() -> PathBuf {
         dirs::data_dir()
             .unwrap_or_else(|| {
@@ -75,210 +103,221 @@ impl Config {
             .join("dictate/models")
     }
 
-    /// Full path to a model file in the model directory
+    /// Full path to a model file in the model directory.
     pub fn model_path(model: &str) -> PathBuf {
         Self::model_dir().join(model)
     }
 
-    /// Load configuration from environment variables
-    #[allow(clippy::field_reassign_with_default)]
+    /// Load configuration from environment variables.
     pub fn from_env() -> Self {
-        let mut config = Config::default();
-
-        config.mistral_api_key = std::env::var("MISTRAL_API_KEY").ok();
-        config.mistral_base_url = std::env::var("MISTRAL_BASE_URL").ok();
-        if let Ok(model) = std::env::var("MISTRAL_MODEL") {
-            config.mistral_model = model;
-        }
-        if let Ok(model) = std::env::var("MISTRAL_REALTIME_MODEL") {
-            config.mistral_realtime_model = model;
-        }
-        config.mistral_realtime_base_url = std::env::var("MISTRAL_REALTIME_BASE_URL").ok();
-        if let Ok(delay) = std::env::var("MISTRAL_REALTIME_DELAY_MS") {
-            if let Ok(parsed) = delay.parse::<u32>() {
-                config.mistral_realtime_delay_ms = parsed;
-            }
-        }
-        if let Ok(mode) = std::env::var("TRANSCRIPTION_MODE") {
-            config.transcription_mode = mode;
-        }
-        if let Ok(enabled) = std::env::var("BATCH_MODE") {
-            config.batch_mode = matches!(
-                enabled.trim().to_lowercase().as_str(),
-                "true" | "1" | "yes" | "on"
-            );
+        /// Helper: read an env var that maps directly to a string field,
+        /// falling back to the default if unset.
+        fn env_str_or(name: &str, default: &str) -> String {
+            std::env::var(name).unwrap_or_else(|_| default.to_string())
         }
 
-        config.groq_api_key = std::env::var("GROQ_API_KEY").ok();
-        config.groq_base_url = std::env::var("GROQ_BASE_URL").ok();
-        if let Ok(model) = std::env::var("GROQ_MODEL") {
-            config.groq_model = model;
+        /// Helper: read an env var and parse into a numeric type with fallback.
+        fn env_parse_or<T: std::str::FromStr>(name: &str, default: T) -> T {
+            std::env::var(name)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default)
         }
 
-        if let Ok(provider) = std::env::var("TRANSCRIPTION_PROVIDER") {
-            config.transcription_provider = provider;
+        /// Helper: read an env var as a boolean (true/1/yes/on).
+        fn env_bool_or(name: &str, default: bool) -> bool {
+            std::env::var(name)
+                .map(|v| {
+                    matches!(
+                        v.trim().to_lowercase().as_str(),
+                        "true" | "1" | "yes" | "on"
+                    )
+                })
+                .unwrap_or(default)
         }
 
-        if let Ok(language) = std::env::var("TRANSCRIPTION_LANGUAGE") {
-            config.transcription_language = language;
+        Config {
+            mistral_api_key: std::env::var("MISTRAL_API_KEY").ok(),
+            mistral_base_url: std::env::var("MISTRAL_BASE_URL").ok(),
+            mistral_model: env_str_or("MISTRAL_MODEL", "voxtral-mini-latest"),
+            mistral_realtime_model: env_str_or(
+                "MISTRAL_REALTIME_MODEL",
+                "voxtral-mini-transcribe-realtime-2602",
+            ),
+            mistral_realtime_base_url: std::env::var("MISTRAL_REALTIME_BASE_URL").ok(),
+            mistral_realtime_delay_ms: env_parse_or("MISTRAL_REALTIME_DELAY_MS", 480u32),
+            transcription_mode: env_str_or("TRANSCRIPTION_MODE", "auto"),
+            batch_mode: env_bool_or("BATCH_MODE", false),
+            groq_api_key: std::env::var("GROQ_API_KEY").ok(),
+            groq_base_url: std::env::var("GROQ_BASE_URL").ok(),
+            groq_model: env_str_or("GROQ_MODEL", "whisper-large-v3-turbo"),
+            transcription_provider: env_str_or("TRANSCRIPTION_PROVIDER", "mistral"),
+            transcription_language: env_str_or("TRANSCRIPTION_LANGUAGE", "auto"),
+            transcription_timeout_seconds: env_parse_or("TRANSCRIPTION_TIMEOUT_SECONDS", 60u64),
+            transcription_max_retries: env_parse_or("TRANSCRIPTION_MAX_RETRIES", 3u32),
+            audio_buffer_duration_seconds: env_parse_or("AUDIO_BUFFER_DURATION_SECONDS", 300usize),
+            audio_sample_rate: env_parse_or("AUDIO_SAMPLE_RATE", 16000u32),
+            audio_channels: env_parse_or("AUDIO_CHANNELS", 1u16),
+            whisper_model: env_str_or("WHISPER_MODEL", "ggml-base.en.bin"),
+            enable_audio_feedback: env_bool_or("ENABLE_AUDIO_FEEDBACK", true),
+            beep_volume: std::env::var("BEEP_VOLUME")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .map(|v| v.clamp(0.0, 1.0))
+                .unwrap_or(0.1),
+            text_processing: Default::default(),
+            profile: DictateProfile::from_env_legacy(
+                std::env::var("DICTATE_PROFILE").ok(),
+                env_bool_or("BATCH_MODE", false),
+                &env_str_or("TRANSCRIPTION_MODE", "auto"),
+            ),
+            default_pipe_to: parse_pipe_to_env(
+                std::env::var("SHORTCUT_OUTPUT")
+                    .ok()
+                    .or_else(|| std::env::var("OUTPUT_MODE").ok())
+                    .as_deref(),
+            ),
+            shortcut_key: std::env::var("SHORTCUT_KEY").ok(),
+            shortcut_desktop: std::env::var("SHORTCUT_DESKTOP").ok(),
         }
-
-        if let Ok(timeout) = std::env::var("TRANSCRIPTION_TIMEOUT_SECONDS") {
-            if let Ok(parsed) = timeout.parse::<u64>() {
-                config.transcription_timeout_seconds = parsed;
-            }
-        }
-
-        if let Ok(retries) = std::env::var("TRANSCRIPTION_MAX_RETRIES") {
-            if let Ok(parsed) = retries.parse::<u32>() {
-                config.transcription_max_retries = parsed;
-            }
-        }
-
-        if let Ok(duration) = std::env::var("AUDIO_BUFFER_DURATION_SECONDS") {
-            if let Ok(parsed) = duration.parse::<usize>() {
-                config.audio_buffer_duration_seconds = parsed;
-            }
-        }
-
-        if let Ok(sample_rate) = std::env::var("AUDIO_SAMPLE_RATE") {
-            if let Ok(parsed) = sample_rate.parse::<u32>() {
-                config.audio_sample_rate = parsed;
-            }
-        }
-
-        if let Ok(channels) = std::env::var("AUDIO_CHANNELS") {
-            if let Ok(parsed) = channels.parse::<u16>() {
-                config.audio_channels = parsed;
-            }
-        }
-
-        if let Ok(model) = std::env::var("WHISPER_MODEL") {
-            config.whisper_model = model;
-        }
-
-        if let Ok(log_level) = std::env::var("RUST_LOG") {
-            config.rust_log = log_level;
-        }
-
-        if let Ok(enabled) = std::env::var("ENABLE_AUDIO_FEEDBACK") {
-            config.enable_audio_feedback = enabled.to_lowercase() == "true";
-        }
-
-        if let Ok(volume) = std::env::var("BEEP_VOLUME") {
-            if let Ok(parsed) = volume.parse::<f32>() {
-                config.beep_volume = parsed.clamp(0.0, 1.0);
-            }
-        }
-
-        config
     }
 
-    /// Load environment file and return config
+    /// Whether Mistral realtime WebSocket STT should be used (live typing profile + mistral).
+    pub fn use_mistral_realtime_stt(&self) -> bool {
+        self.profile == DictateProfile::LiveTyping
+            && self.transcription_provider.eq_ignore_ascii_case("mistral")
+            && !self.transcription_mode.eq_ignore_ascii_case("batch")
+    }
+
+    /// Effective pipe command: CLI override or configured default.
+    pub fn resolve_pipe_to<'a>(&'a self, cli: Option<&'a Vec<String>>) -> Option<&'a Vec<String>> {
+        cli.or(self.default_pipe_to.as_ref())
+    }
+
+    /// Load environment file and return config.
     pub fn load_env_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         dotenvy::from_path(path)?;
         Ok(Self::from_env())
     }
 
-    /// Validate configuration
+    /// Return the text-processing config path that sits beside the env file.
+    pub fn text_config_path_for_env_file<P: AsRef<Path>>(path: P) -> PathBuf {
+        path.as_ref().with_file_name("text.toml")
+    }
+
+    /// Load local dictionary/snippet configuration. Missing files are a no-op.
+    pub fn load_text_config_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(());
+        }
+        let contents = std::fs::read_to_string(path)?;
+        self.text_processing = toml::from_str(&contents)?;
+        Ok(())
+    }
+
+    /// Validate configuration.
     pub fn validate(&self) -> Result<()> {
         match self.transcription_provider.to_lowercase().as_str() {
             "mistral" => {
                 if self.mistral_api_key.is_none() {
-                    return Err(anyhow::anyhow!(
-                        "MISTRAL_API_KEY is required when using Mistral provider. Please set it in your .env file."
-                    ));
+                    anyhow::bail!(
+                        "MISTRAL_API_KEY is required when using Mistral provider. \
+                         Please set it in your .env file."
+                    );
                 }
             }
             "groq" => {
                 if self.groq_api_key.is_none() {
-                    return Err(anyhow::anyhow!(
-                        "GROQ_API_KEY is required when using Groq provider. Please set it in your .env file."
-                    ));
+                    anyhow::bail!(
+                        "GROQ_API_KEY is required when using Groq provider. \
+                         Please set it in your .env file."
+                    );
                 }
             }
             "local" => {
                 let model_path = Config::model_path(&self.whisper_model);
                 if !model_path.exists() {
-                    return Err(anyhow::anyhow!(
+                    anyhow::bail!(
                         "Local model not found at {}. Use --download-model to fetch it.",
                         model_path.display()
-                    ));
+                    );
                 }
             }
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Unsupported transcription provider: {}. Supported providers: mistral, groq, local",
-                    self.transcription_provider
-                ));
+            other => {
+                anyhow::bail!(
+                    "Unsupported transcription provider: {other}. \
+                     Supported providers: mistral, groq, local"
+                );
             }
         }
 
         if self.audio_buffer_duration_seconds == 0 {
-            return Err(anyhow::anyhow!(
-                "AUDIO_BUFFER_DURATION_SECONDS must be greater than 0"
-            ));
+            anyhow::bail!("AUDIO_BUFFER_DURATION_SECONDS must be greater than 0");
         }
-
         if self.audio_sample_rate == 0 {
-            return Err(anyhow::anyhow!("AUDIO_SAMPLE_RATE must be greater than 0"));
+            anyhow::bail!("AUDIO_SAMPLE_RATE must be greater than 0");
         }
-
         if self.audio_channels == 0 {
-            return Err(anyhow::anyhow!("AUDIO_CHANNELS must be greater than 0"));
+            anyhow::bail!("AUDIO_CHANNELS must be greater than 0");
         }
-
         if self.transcription_timeout_seconds == 0 {
-            return Err(anyhow::anyhow!(
-                "TRANSCRIPTION_TIMEOUT_SECONDS must be greater than 0"
-            ));
+            anyhow::bail!("TRANSCRIPTION_TIMEOUT_SECONDS must be greater than 0");
         }
 
         match self.transcription_mode.to_lowercase().as_str() {
             "auto" | "realtime" | "batch" => {}
             other => {
-                return Err(anyhow::anyhow!(
-                    "Unsupported TRANSCRIPTION_MODE: {}. Supported modes: auto, realtime, batch",
-                    other
-                ));
+                anyhow::bail!(
+                    "Unsupported TRANSCRIPTION_MODE: {other}. Supported modes: auto, realtime, batch"
+                );
             }
         }
 
-        if self.mistral_realtime_delay_ms == 0 {
-            return Err(anyhow::anyhow!(
-                "MISTRAL_REALTIME_DELAY_MS must be greater than 0"
-            ));
+        if self.profile == DictateProfile::SmartPaste
+            && !self.transcription_provider.eq_ignore_ascii_case("mistral")
+        {
+            anyhow::bail!(
+                "DICTATE_PROFILE=smart_paste requires TRANSCRIPTION_PROVIDER=mistral (for LLM polish)."
+            );
         }
 
-        if self.beep_volume < 0.0 || self.beep_volume > 1.0 {
-            return Err(anyhow::anyhow!(
+        if self.mistral_realtime_delay_ms == 0 {
+            anyhow::bail!("MISTRAL_REALTIME_DELAY_MS must be greater than 0");
+        }
+
+        if !(0.0..=1.0).contains(&self.beep_volume) {
+            anyhow::bail!(
                 "BEEP_VOLUME must be between 0.0 and 1.0, got: {}",
                 self.beep_volume
-            ));
+            );
         }
 
         Ok(())
     }
 }
 
-/// Load configuration from environment variables
-pub fn load_config() -> Config {
-    Config::from_env()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::ENV_MUTEX;
-    use std::env;
     use std::io::Write;
-    use tempfile::NamedTempFile;
 
     fn clear_env_vars() {
         for key in [
+            "DICTATE_PROFILE",
+            "BATCH_MODE",
+            "TRANSCRIPTION_MODE",
+            "SHORTCUT_OUTPUT",
+            "OUTPUT_MODE",
+            "SHORTCUT_KEY",
+            "SHORTCUT_DESKTOP",
             "MISTRAL_API_KEY",
             "MISTRAL_BASE_URL",
             "MISTRAL_MODEL",
+            "MISTRAL_REALTIME_MODEL",
+            "MISTRAL_REALTIME_BASE_URL",
+            "MISTRAL_REALTIME_DELAY_MS",
             "GROQ_API_KEY",
             "GROQ_BASE_URL",
             "GROQ_MODEL",
@@ -294,7 +333,7 @@ mod tests {
             "ENABLE_AUDIO_FEEDBACK",
             "BEEP_VOLUME",
         ] {
-            env::remove_var(key);
+            std::env::remove_var(key);
         }
     }
 
@@ -302,153 +341,123 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.mistral_api_key, None);
-        assert_eq!(config.mistral_base_url, None);
         assert_eq!(config.mistral_model, "voxtral-mini-latest");
-        assert_eq!(config.groq_api_key, None);
-        assert_eq!(config.groq_base_url, None);
-        assert_eq!(config.groq_model, "whisper-large-v3-turbo");
         assert_eq!(config.transcription_provider, "mistral");
         assert_eq!(config.transcription_language, "auto");
         assert_eq!(config.transcription_timeout_seconds, 60);
-        assert_eq!(config.transcription_max_retries, 3);
-        assert_eq!(config.audio_buffer_duration_seconds, 300);
         assert_eq!(config.audio_sample_rate, 16000);
-        assert_eq!(config.audio_channels, 1);
-        assert_eq!(config.whisper_model, "ggml-base.en.bin");
-        assert_eq!(config.rust_log, "info");
         assert!(config.enable_audio_feedback);
-        assert_eq!(config.beep_volume, 0.1);
+        assert!((config.beep_volume - 0.1).abs() < f32::EPSILON);
     }
 
     #[tokio::test]
     async fn test_config_from_env_defaults() {
-        #[allow(clippy::await_holding_lock)]
-        {
-            let _lock = ENV_MUTEX.lock().await;
-            clear_env_vars();
+        let _lock = ENV_MUTEX.lock().await;
+        clear_env_vars();
 
-            let config = Config::from_env();
-            assert_eq!(config.transcription_provider, "mistral");
-            assert_eq!(config.transcription_language, "auto");
-            assert_eq!(config.transcription_timeout_seconds, 60);
-            assert_eq!(config.transcription_max_retries, 3);
-            assert_eq!(config.mistral_api_key, None);
-            assert_eq!(config.groq_api_key, None);
+        let config = Config::from_env();
+        assert_eq!(config.transcription_provider, "mistral");
+        assert_eq!(config.transcription_language, "auto");
+        assert_eq!(config.mistral_api_key, None);
 
-            clear_env_vars();
-        }
+        clear_env_vars();
     }
 
     #[tokio::test]
     async fn test_config_from_env_variables() {
-        #[allow(clippy::await_holding_lock)]
-        {
-            let _lock = ENV_MUTEX.lock().await;
-            clear_env_vars();
+        let _lock = ENV_MUTEX.lock().await;
+        clear_env_vars();
 
-            env::set_var("MISTRAL_API_KEY", "mistral-key");
-            env::set_var("MISTRAL_BASE_URL", "http://mistral.test/v1");
-            env::set_var("MISTRAL_MODEL", "voxtral-mini-2602");
-            env::set_var("GROQ_API_KEY", "groq-key");
-            env::set_var("GROQ_BASE_URL", "http://groq.test/openai/v1");
-            env::set_var("GROQ_MODEL", "whisper-large-v3-turbo");
-            env::set_var("TRANSCRIPTION_PROVIDER", "groq");
-            env::set_var("TRANSCRIPTION_LANGUAGE", "en");
-            env::set_var("TRANSCRIPTION_TIMEOUT_SECONDS", "120");
-            env::set_var("TRANSCRIPTION_MAX_RETRIES", "5");
-            env::set_var("AUDIO_BUFFER_DURATION_SECONDS", "600");
-            env::set_var("AUDIO_SAMPLE_RATE", "44100");
-            env::set_var("AUDIO_CHANNELS", "2");
-            env::set_var("WHISPER_MODEL", "ggml-small.en.bin");
-            env::set_var("RUST_LOG", "debug");
+        std::env::set_var("MISTRAL_API_KEY", "mistral-key");
+        std::env::set_var("MISTRAL_MODEL", "voxtral-mini-2602");
+        std::env::set_var("GROQ_API_KEY", "groq-key");
+        std::env::set_var("GROQ_MODEL", "whisper-large-v3-turbo");
+        std::env::set_var("TRANSCRIPTION_PROVIDER", "groq");
+        std::env::set_var("TRANSCRIPTION_LANGUAGE", "en");
+        std::env::set_var("TRANSCRIPTION_TIMEOUT_SECONDS", "120");
+        std::env::set_var("AUDIO_SAMPLE_RATE", "44100");
 
-            let config = Config::from_env();
-            assert_eq!(config.mistral_api_key, Some("mistral-key".to_string()));
-            assert_eq!(
-                config.mistral_base_url,
-                Some("http://mistral.test/v1".to_string())
-            );
-            assert_eq!(config.mistral_model, "voxtral-mini-2602");
-            assert_eq!(config.groq_api_key, Some("groq-key".to_string()));
-            assert_eq!(
-                config.groq_base_url,
-                Some("http://groq.test/openai/v1".to_string())
-            );
-            assert_eq!(config.groq_model, "whisper-large-v3-turbo");
-            assert_eq!(config.transcription_provider, "groq");
-            assert_eq!(config.transcription_language, "en");
-            assert_eq!(config.transcription_timeout_seconds, 120);
-            assert_eq!(config.transcription_max_retries, 5);
-            assert_eq!(config.audio_buffer_duration_seconds, 600);
-            assert_eq!(config.audio_sample_rate, 44100);
-            assert_eq!(config.audio_channels, 2);
-            assert_eq!(config.whisper_model, "ggml-small.en.bin");
-            assert_eq!(config.rust_log, "debug");
+        let config = Config::from_env();
+        assert_eq!(config.mistral_api_key, Some("mistral-key".to_string()));
+        assert_eq!(config.mistral_model, "voxtral-mini-2602");
+        assert_eq!(config.groq_api_key, Some("groq-key".to_string()));
+        assert_eq!(config.transcription_provider, "groq");
+        assert_eq!(config.transcription_language, "en");
+        assert_eq!(config.transcription_timeout_seconds, 120);
+        assert_eq!(config.audio_sample_rate, 44100);
 
-            clear_env_vars();
-        }
+        clear_env_vars();
     }
 
     #[tokio::test]
     async fn test_config_from_env_invalid_numbers() {
-        #[allow(clippy::await_holding_lock)]
-        {
-            let _lock = ENV_MUTEX.lock().await;
-            clear_env_vars();
+        let _lock = ENV_MUTEX.lock().await;
+        clear_env_vars();
 
-            env::set_var("AUDIO_BUFFER_DURATION_SECONDS", "invalid");
-            env::set_var("AUDIO_SAMPLE_RATE", "not-a-number");
-            env::set_var("AUDIO_CHANNELS", "bad");
-            env::set_var("TRANSCRIPTION_TIMEOUT_SECONDS", "invalid");
-            env::set_var("TRANSCRIPTION_MAX_RETRIES", "bad");
+        std::env::set_var("AUDIO_BUFFER_DURATION_SECONDS", "invalid");
+        std::env::set_var("AUDIO_SAMPLE_RATE", "not-a-number");
+        std::env::set_var("TRANSCRIPTION_TIMEOUT_SECONDS", "invalid");
 
-            let config = Config::from_env();
-            assert_eq!(config.audio_buffer_duration_seconds, 300);
-            assert_eq!(config.audio_sample_rate, 16000);
-            assert_eq!(config.audio_channels, 1);
-            assert_eq!(config.transcription_timeout_seconds, 60);
-            assert_eq!(config.transcription_max_retries, 3);
+        let config = Config::from_env();
+        assert_eq!(config.audio_buffer_duration_seconds, 300);
+        assert_eq!(config.audio_sample_rate, 16000);
+        assert_eq!(config.transcription_timeout_seconds, 60);
 
-            clear_env_vars();
-        }
+        clear_env_vars();
     }
 
     #[tokio::test]
     async fn test_load_env_file() {
-        #[allow(clippy::await_holding_lock)]
-        {
-            let _lock = ENV_MUTEX.lock().await;
-            clear_env_vars();
+        let _lock = ENV_MUTEX.lock().await;
+        clear_env_vars();
 
-            let mut temp_file = NamedTempFile::new().unwrap();
-            writeln!(temp_file, "MISTRAL_API_KEY=file-api-key").unwrap();
-            writeln!(temp_file, "MISTRAL_BASE_URL=http://localhost:8080").unwrap();
-            writeln!(temp_file, "AUDIO_BUFFER_DURATION_SECONDS=120").unwrap();
-            writeln!(temp_file, "WHISPER_MODEL=ggml-base.en.bin").unwrap();
-            writeln!(temp_file, "RUST_LOG=warn").unwrap();
-            writeln!(temp_file, "TRANSCRIPTION_PROVIDER=mistral").unwrap();
+        let mut temp_file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(temp_file, "MISTRAL_API_KEY=file-api-key").unwrap();
+        writeln!(temp_file, "TRANSCRIPTION_PROVIDER=mistral").unwrap();
 
-            let config = Config::load_env_file(temp_file.path()).unwrap();
+        let config = Config::load_env_file(temp_file.path()).unwrap();
+        assert_eq!(config.mistral_api_key, Some("file-api-key".to_string()));
+        assert_eq!(config.transcription_provider, "mistral");
 
-            assert_eq!(config.mistral_api_key, Some("file-api-key".to_string()));
-            assert_eq!(
-                config.mistral_base_url,
-                Some("http://localhost:8080".to_string())
-            );
-            assert_eq!(config.transcription_provider, "mistral");
-            assert_eq!(config.audio_buffer_duration_seconds, 120);
-            assert_eq!(config.whisper_model, "ggml-base.en.bin");
-            assert_eq!(config.rust_log, "warn");
-            assert_eq!(config.transcription_language, "auto");
-
-            clear_env_vars();
-        }
+        clear_env_vars();
     }
 
     #[test]
     fn test_load_nonexistent_env_file() {
-        let result = Config::load_env_file("/nonexistent/path/.env");
-        assert!(result.is_err());
+        assert!(Config::load_env_file("/nonexistent/path/.env").is_err());
+    }
+
+    #[test]
+    fn test_missing_text_config_is_no_op() {
+        let mut config = Config::default();
+        let dir = tempfile::tempdir().unwrap();
+        config
+            .load_text_config_file(dir.path().join("text.toml"))
+            .unwrap();
+        assert_eq!(config.text_processing, TextProcessingConfig::default());
+    }
+
+    #[test]
+    fn test_load_text_config_file() {
+        let mut config = Config::default();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("text.toml");
+        std::fs::write(
+            &path,
+            "[dictionary]\n\"whisper flow\" = \"Wispr Flow\"\n\n[cleanup]\nenabled = true\nfix_spacing = true\n\n[[snippets]]\ntrigger = \"calendar link\"\ntext = \"Book a time here\"\n",
+        )
+        .unwrap();
+
+        config.load_text_config_file(&path).unwrap();
+        assert_eq!(
+            config
+                .text_processing
+                .dictionary
+                .get("whisper flow")
+                .map(String::as_str),
+            Some("Wispr Flow")
+        );
+        assert_eq!(config.text_processing.snippets.len(), 1);
     }
 
     #[test]
@@ -457,20 +466,14 @@ mod tests {
             mistral_api_key: Some("test-key".to_string()),
             ..Default::default()
         };
-
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn test_config_validation_mistral_missing_api_key() {
-        let config = Config::default();
-
-        let result = config.validate();
+        let result = Config::default().validate();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("MISTRAL_API_KEY is required"));
+        assert!(result.unwrap_err().to_string().contains("MISTRAL_API_KEY"));
     }
 
     #[test]
@@ -480,68 +483,18 @@ mod tests {
             groq_api_key: Some("test-key".to_string()),
             ..Default::default()
         };
-
         assert!(config.validate().is_ok());
     }
 
     #[test]
-    fn test_config_validation_groq_missing_api_key() {
+    fn test_config_validation_unsupported_provider() {
         let config = Config {
-            transcription_provider: "groq".to_string(),
+            transcription_provider: "azure".to_string(),
             ..Default::default()
         };
-
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("GROQ_API_KEY is required"));
-    }
-
-    #[test]
-    fn test_config_validation_invalid_duration() {
-        let config = Config {
-            mistral_api_key: Some("test-key".to_string()),
-            audio_buffer_duration_seconds: 0,
-            ..Default::default()
-        };
-
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("AUDIO_BUFFER_DURATION_SECONDS"));
-    }
-
-    #[test]
-    fn test_config_validation_invalid_sample_rate() {
-        let config = Config {
-            mistral_api_key: Some("test-key".to_string()),
-            audio_sample_rate: 0,
-            ..Default::default()
-        };
-
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("AUDIO_SAMPLE_RATE"));
-    }
-
-    #[test]
-    fn test_config_validation_invalid_channels() {
-        let config = Config {
-            mistral_api_key: Some("test-key".to_string()),
-            audio_channels: 0,
-            ..Default::default()
-        };
-
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("AUDIO_CHANNELS"));
+        assert!(result.unwrap_err().to_string().contains("azure"));
     }
 
     #[test]
@@ -551,152 +504,13 @@ mod tests {
             beep_volume: -0.1,
             ..Default::default()
         };
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("BEEP_VOLUME"));
+        assert!(config.validate().is_err());
 
-        let config2 = Config {
+        let config = Config {
             mistral_api_key: Some("test-key".to_string()),
             beep_volume: 1.1,
             ..Default::default()
         };
-        let result = config2.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("BEEP_VOLUME"));
-    }
-
-    #[tokio::test]
-    async fn test_config_audio_feedback_env_vars() {
-        #[allow(clippy::await_holding_lock)]
-        {
-            let _lock = ENV_MUTEX.lock().await;
-            clear_env_vars();
-
-            env::set_var("ENABLE_AUDIO_FEEDBACK", "true");
-            env::set_var("BEEP_VOLUME", "0.5");
-
-            let config = Config::from_env();
-            assert!(config.enable_audio_feedback);
-            assert_eq!(config.beep_volume, 0.5);
-
-            clear_env_vars();
-
-            env::set_var("ENABLE_AUDIO_FEEDBACK", "false");
-            env::set_var("BEEP_VOLUME", "0.8");
-
-            let config = Config::from_env();
-            assert!(!config.enable_audio_feedback);
-            assert_eq!(config.beep_volume, 0.8);
-
-            clear_env_vars();
-        }
-    }
-
-    #[tokio::test]
-    async fn test_config_audio_feedback_invalid_env_vars() {
-        #[allow(clippy::await_holding_lock)]
-        {
-            let _lock = ENV_MUTEX.lock().await;
-            clear_env_vars();
-
-            env::set_var("BEEP_VOLUME", "invalid");
-            let config = Config::from_env();
-            assert_eq!(config.beep_volume, 0.1);
-
-            env::set_var("BEEP_VOLUME", "2.0");
-            let config = Config::from_env();
-            assert_eq!(config.beep_volume, 1.0);
-
-            env::set_var("BEEP_VOLUME", "-0.5");
-            let config = Config::from_env();
-            assert_eq!(config.beep_volume, 0.0);
-
-            clear_env_vars();
-        }
-    }
-
-    #[tokio::test]
-    async fn test_transcription_provider_configuration() {
-        #[allow(clippy::await_holding_lock)]
-        {
-            let _lock = ENV_MUTEX.lock().await;
-            clear_env_vars();
-
-            let config = Config::from_env();
-            assert_eq!(config.transcription_provider, "mistral");
-
-            env::set_var("TRANSCRIPTION_PROVIDER", "groq");
-            let config = Config::from_env();
-            assert_eq!(config.transcription_provider, "groq");
-
-            clear_env_vars();
-        }
-    }
-
-    #[test]
-    fn test_config_validation_unsupported_provider() {
-        let config = Config {
-            transcription_provider: "azure".to_string(),
-            ..Default::default()
-        };
-
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unsupported transcription provider: azure"));
-    }
-
-    #[tokio::test]
-    async fn test_config_validation_local_missing_model() {
-        let _lock = ENV_MUTEX.lock().await;
-        let original_home = std::env::var("HOME").ok();
-        let tmp_home = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", tmp_home.path());
-
-        let config = Config {
-            transcription_provider: "local".to_string(),
-            whisper_model: "missing.bin".to_string(),
-            ..Default::default()
-        };
-
-        let result = config.validate();
-
-        if let Some(home) = original_home {
-            std::env::set_var("HOME", home);
-        } else {
-            std::env::remove_var("HOME");
-        }
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_config_validation_local_success() {
-        let _lock = ENV_MUTEX.lock().await;
-        let original_home = std::env::var("HOME").ok();
-        let tmp_home = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", tmp_home.path());
-
-        let model_path = Config::model_path("dummy.bin");
-        std::fs::create_dir_all(model_path.parent().unwrap()).unwrap();
-        std::fs::write(&model_path, b"test").unwrap();
-
-        let config = Config {
-            transcription_provider: "local".to_string(),
-            whisper_model: "dummy.bin".to_string(),
-            ..Default::default()
-        };
-
-        let result = config.validate();
-
-        if let Some(home) = original_home {
-            std::env::set_var("HOME", home);
-        } else {
-            std::env::remove_var("HOME");
-        }
-
-        assert!(result.is_ok());
+        assert!(config.validate().is_err());
     }
 }

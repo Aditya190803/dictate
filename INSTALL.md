@@ -12,18 +12,26 @@ The installer will:
 1. Detect your distro and install system dependencies (PipeWire, etc.)
 2. Download the latest binary from GitHub Releases, or build from source
 3. Install `dictate` locally
-4. Run `dictate config wizard` locally so you can configure everything interactively
-5. Print shortcut instructions generated from your wizard answers
+4. Run `dictate setup` or `dictate config wizard` so you can configure interactively
+5. Print shortcut instructions from your answers (`DICTATE_PROFILE`, `SHORTCUT_OUTPUT`)
 
-The wizard asks you:
-- **Provider** — mistral (default), groq, or local
-- **API key** — your Mistral or Groq API key
-- **Model** — model name for your provider
-- **Language** — auto or an ISO code like `en`
-- **Output mode** — type (directly into window), clipboard, or stdout
-- **Desktop environment** — hyprland, niri, gnome, kde, sway, or other
-- **Shortcut key** — e.g. `SUPER,R`, `Mod,R`, or `<Super>r`
-- **Audio feedback** — enable/disable beeps and choose beep volume
+**Recommended:** `dictate setup` — picks a **dictation style** first, then provider, API key, output, desktop, and shortcut.
+
+| Style (`DICTATE_PROFILE`) | What it does |
+|---------------------------|--------------|
+| `live_typing` (default) | Words appear as you speak (Mistral realtime, `dictate --daemon`) |
+| `smart_paste` | Speak, stop once — whole clip is transcribed, **polished with Mistral chat**, then pasted once |
+| `batch_clip` | Record, stop — batch STT + local cleanup only (no LLM) |
+
+Setup also asks:
+- **Provider** — mistral (default), groq, or local (`smart_paste` requires **mistral** for LLM polish)
+- **API key** — Mistral or Groq
+- **Shortcut output** (`SHORTCUT_OUTPUT`) — `type`, `paste` (clipboard + Ctrl+V), `clipboard`, or `stdout`
+- **Desktop** — hyprland, niri, gnome, kde, sway, other
+- **Shortcut key** — e.g. `SUPER,R`
+- **Audio feedback** — beeps on/off and volume
+
+Verify with `dictate doctor`.
 
 **Release note:** the fastest path needs a GitHub Release binary. If no matching release binary is available, the installer falls back to building from source. To force source builds, run:
 
@@ -135,41 +143,37 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 mkdir -p ~/.config/dictate
 ```
 
-### Using the Wizard
-
-Interactive setup:
+### Interactive setup
 
 ```bash
-dictate config wizard
+dictate setup              # guided menus (recommended)
+dictate setup --quick      # fewer questions (defaults to mistral)
+dictate config wizard      # scriptable flags for CI/agents
+dictate doctor             # check API keys, profile, wl-copy/ydotool
 ```
 
-Non-interactive setup, useful for scripts and AI agents after collecting answers:
+Non-interactive wizard example:
 
 ```bash
 dictate config wizard \
   --provider mistral \
+  --profile live_typing \
   --mistral-api-key "$MISTRAL_API_KEY" \
-  --mistral-model voxtral-mini-latest \
   --language auto \
   --output-mode type \
   --desktop hyprland \
   --shortcut-key SUPER,R \
-  --audio-feedback true \
-  --beep-volume 0.1
+  --audio-feedback true
 ```
 
-For Groq, use `--provider groq --groq-api-key "$GROQ_API_KEY" --groq-model whisper-large-v3-turbo`. For local Whisper, use `--provider local --whisper-model ggml-base.en.bin`, then run `dictate --download-model`.
+For **smart paste**, use `--profile smart_paste` and `--output-mode paste`. For Groq: `--provider groq --groq-api-key "$GROQ_API_KEY"`. For local: `--provider local --whisper-model ggml-base.en.bin`, then `dictate --download-model`.
 
-The wizard supports:
-- **Provider** — `mistral` (default), `groq`, or `local`
-- **API key** — your Mistral or Groq API key
-- **Model** — model name for the chosen provider
-- **Batch mode** — `false` by default for Mistral realtime; set `true` to use whole-clip batch transcription
-- **Language** — `auto` or an ISO code like `en`
-- **Output mode** — `type`, `clipboard`, or `stdout`
-- **Desktop** — `hyprland`, `niri`, `gnome`, `kde`, `sway`, or `other`
-- **Shortcut key** — e.g. `SUPER,R`, `Mod,R`, or `<Super>r`
-- **Audio feedback** — enable/disable beeps and choose beep volume
+Wizard / setup sets:
+- **`DICTATE_PROFILE`** — `live_typing`, `smart_paste`, or `batch_clip` (replaces juggling `BATCH_MODE` for most users)
+- **`SHORTCUT_OUTPUT`** — default pipe when your shortcut runs plain `dictate` (also used to generate bind lines)
+- Provider, API key, language, desktop, shortcut key, beeps
+
+Legacy: `BATCH_MODE=true` still maps to batch-style behavior; prefer `DICTATE_PROFILE=batch_clip`.
 
 ### Manual Config
 
@@ -179,22 +183,23 @@ Create `~/.config/dictate/.env`:
 # Provider: mistral, groq, or local
 TRANSCRIPTION_PROVIDER=mistral
 
-# Mistral (default)
 MISTRAL_API_KEY=your_mistral_api_key_here
 
-# false = realtime by default for Mistral, including keyboard shortcuts
-# true = opt out and use whole-clip batch transcription
-BATCH_MODE=false
+# Dictation style: live_typing | smart_paste | batch_clip
+DICTATE_PROFILE=live_typing
 
-# Legacy override: auto, realtime, or batch
-TRANSCRIPTION_MODE=auto
+# Default output when shortcut omits --pipe-to: type | paste | clipboard | stdout
+SHORTCUT_OUTPUT=type
+SHORTCUT_KEY=SUPER,R
+SHORTCUT_DESKTOP=hyprland
 
-# Batch/offline model
 MISTRAL_MODEL=voxtral-mini-latest
-
-# Realtime WebSocket model
 MISTRAL_REALTIME_MODEL=voxtral-mini-transcribe-realtime-2602
 MISTRAL_REALTIME_DELAY_MS=480
+
+# Optional legacy STT toggles (advanced)
+# BATCH_MODE=false
+# TRANSCRIPTION_MODE=auto
 
 # Groq
 # GROQ_API_KEY=your_groq_api_key_here
@@ -212,13 +217,30 @@ BEEP_VOLUME=0.1
 ### Using Config Commands
 
 ```bash
-dictate config set provider groq
-dictate config set groq-model whisper-large-v3-turbo
-dictate config set batch-mode true
-dictate config set shortcut-key SUPER,R
+dictate config set profile smart_paste
+dictate config set shortcut-output paste
+dictate config set provider mistral
+dictate config set mistral-api-key "$MISTRAL_API_KEY"
 dictate config get
 dictate config edit
 ```
+
+### Smart paste & LLM polish
+
+With **`DICTATE_PROFILE=smart_paste`**, dictate runs as a **daemon**: press your shortcut to start recording, press again to stop. It batch-transcribes the clip, runs local dictionary/snippets/cleanup, then calls **Mistral chat** to frame the text (mid-sentence corrections like “actually by two”, spoken “next line”, bullet lists). The result is sent once to your `SHORTCUT_OUTPUT` pipe ( **`paste`** is recommended).
+
+Create `~/.config/dictate/text.toml` (optional):
+
+```toml
+[polish]
+enabled = true
+model = "mistral-small-latest"
+on_failure = "fallback"   # fallback = insert locally cleaned text; error = insert nothing
+
+# Same file can hold dictionary, snippets, cleanup — see README
+```
+
+Uses the same **`MISTRAL_API_KEY`** as speech-to-text. If polish fails after retries, `on_failure=fallback` pastes the locally processed transcript and prints a warning.
 
 ### Using a Custom Config Path
 
@@ -292,9 +314,11 @@ binds {
 ### Generate Shortcuts Automatically
 
 ```bash
-dictate shortcuts hyprland --mode type --key SUPER,R
-dictate shortcuts niri --mode clipboard --key Mod+Shift+R
+dictate shortcuts hyprland --profile live_typing --mode type --key SUPER,R
+dictate shortcuts hyprland --profile smart_paste --mode paste --key SUPER,R
 ```
+
+`live_typing` and `smart_paste` snippets include **`--daemon`** so the process stays warm between key presses.
 
 ---
 
@@ -362,14 +386,13 @@ paru -R dictate-bin
 AI agents should ask the user the setup questions first, install with the interactive wizard skipped, then run `dictate config wizard` with flags so setup completes without asking the user to do anything manually.
 
 Ask the user:
-1. **Provider** — `mistral`, `groq`, or `local`?
-2. **API key** — Mistral or Groq key, if using an online provider?
-3. **Model** — provider model, or default?
-4. **Language** — `auto` or an ISO code like `en`?
-5. **Output mode** — `type`, `clipboard`, or `stdout`?
-6. **Desktop** — `hyprland`, `niri`, `gnome`, `kde`, `sway`, or `other`?
-7. **Shortcut key** — e.g. `SUPER,R`, `Mod,R`, or `<Super>r`?
-8. **Audio feedback** — enable beeps? What volume?
+1. **Dictation style** — `live_typing`, `smart_paste` (LLM polish + paste), or `batch_clip`?
+2. **Provider** — `mistral`, `groq`, or `local`? (`smart_paste` needs mistral)
+3. **API key** — Mistral or Groq if online
+4. **Shortcut output** — `type`, `paste`, `clipboard`, or `stdout`?
+5. **Desktop** — `hyprland`, `niri`, etc.
+6. **Shortcut key** — e.g. `SUPER,R`
+7. **Audio feedback** — beeps on/off, volume
 
 Then run:
 
@@ -378,16 +401,15 @@ curl -fsSL https://dictate.adityamer.dev/install.sh | DICTATE_SKIP_WIZARD=yes sh
 
 dictate config wizard \
   --provider mistral \
+  --profile smart_paste \
   --mistral-api-key "$MISTRAL_API_KEY" \
-  --mistral-model voxtral-mini-latest \
   --language auto \
-  --output-mode type \
+  --output-mode paste \
   --desktop hyprland \
-  --shortcut-key SUPER,R \
-  --audio-feedback true \
-  --beep-volume 0.1
+  --shortcut-key SUPER,R
 
-dictate shortcuts hyprland --mode type --key SUPER,R
+dictate shortcuts hyprland --profile smart_paste --mode paste --key SUPER,R
+dictate doctor
 ```
 
 For Groq, use `--provider groq --groq-api-key "$GROQ_API_KEY" --groq-model whisper-large-v3-turbo`. For local Whisper, use `--provider local --whisper-model ggml-base.en.bin`, then run `dictate --download-model`.

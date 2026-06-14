@@ -26,6 +26,7 @@ mod config_cli;
 mod developer_modes;
 mod llm_polish;
 mod profile;
+mod setup_tui;
 mod streaming;
 mod text_processing;
 mod transcription;
@@ -104,6 +105,12 @@ enum Commands {
     Shortcuts(ShortcutArgs),
     /// Check config, API keys, and optional dependencies
     Doctor,
+    /// Interactive setup (profiles, keys, shortcuts)
+    Setup {
+        /// Skip provider/beep questions
+        #[arg(long)]
+        quick: bool,
+    },
 }
 
 /// Runtime args plus resolved pipe target (CLI or SHORTCUT_OUTPUT from config).
@@ -676,6 +683,10 @@ async fn main() -> Result<()> {
             Commands::Doctor => {
                 let config = load_config_for_doctor(&envfile)?;
                 config_cli::run_doctor(&config, &envfile);
+                return Ok(());
+            }
+            Commands::Setup { quick } => {
+                setup_tui::run_setup(*quick)?;
                 return Ok(());
             }
         }

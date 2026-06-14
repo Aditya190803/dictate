@@ -22,6 +22,7 @@ signal-hook = "0.3"
 signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 futures = "0.3"
 clap = { version = "4.0", features = ["derive"] }
+inquire = "0.7"
 dotenvy = "0.15"
 dirs = "5.0"
 

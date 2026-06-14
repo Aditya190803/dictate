@@ -200,7 +200,7 @@ fn read_config_value(path: &PathBuf, key: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
-fn set_config_value(path: &PathBuf, key: &str, value: &str) -> Result<()> {
+pub fn set_config_value(path: &PathBuf, key: &str, value: &str) -> Result<()> {
     ensure_config_file(path)?;
     let key = normalize_config_key(key);
     let contents = std::fs::read_to_string(path).unwrap_or_default();

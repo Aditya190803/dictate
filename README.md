@@ -318,7 +318,9 @@ Choose how dictation behaves with **`DICTATE_PROFILE`** in `~/.config/dictate/.e
 | `smart_paste` | Record until stop, transcribe, LLM polish, paste once (`dictate --daemon`) |
 | `batch_clip` | Whole-clip batch STT, local cleanup only |
 
-Run `dictate config wizard` or `dictate doctor` to verify setup. Legacy `BATCH_MODE=true` maps to `batch_clip`.
+Run **`dictate setup`** (guided), **`dictate config wizard`** (scriptable), or **`dictate doctor`** to verify setup. Legacy `BATCH_MODE=true` maps to `batch_clip`.
+
+**Smart paste** (`DICTATE_PROFILE=smart_paste`): add `[polish]` in `text.toml` (optional; enabled by default for that profile). Mistral chat frames corrections, new lines, and lists from your speech.
 
 ### Mistral (Default)
 

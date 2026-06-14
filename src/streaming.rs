@@ -3,14 +3,16 @@ use crate::audio_processing::AudioProcessor;
 use crate::beep::{BeepConfig, BeepPlayer, BeepType};
 use crate::command;
 use crate::config::Config;
-use crate::transcription::{TranscriptionFactory, TranscriptionProvider};
+use crate::developer_modes::apply_developer_mode;
+use crate::text_processing::process_text;
+use crate::transcription::{SharedProvider, TranscriptionFactory};
 use crate::wav::WavEncoder;
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use futures::{SinkExt, StreamExt};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
@@ -22,6 +24,7 @@ const SPEECH_END_FRAMES: usize = 20; // 600ms silence to end speech
 const MIN_SPEECH_MS: usize = 500; // minimum 500ms speech segment
 const MAX_SPEECH_MS: usize = 15000; // max 15s segment (force split)
 const RING_FRAMES: usize = 20; // 600ms lookback ring buffer
+const SEGMENT_QUEUE_CAPACITY: usize = 8;
 
 /// Voice Activity Detection segmenter
 pub struct VADSegmenter {
@@ -29,12 +32,12 @@ pub struct VADSegmenter {
     frame_size: usize,
     threshold: f32,
     noise_floor: f32,
-    buffer: Vec<f32>,
+    buffer: VecDeque<f32>,
     speech_buffer: Vec<f32>,
     in_speech: bool,
     consecutive_speech: usize,
     consecutive_silence: usize,
-    ring_buffer: Vec<Vec<f32>>,
+    ring_buffer: VecDeque<Vec<f32>>,
     total_speech_frames: usize,
 }
 
@@ -47,23 +50,23 @@ impl VADSegmenter {
             frame_size,
             threshold: 0.02,
             noise_floor: 0.01,
-            buffer: Vec::new(),
+            buffer: VecDeque::new(),
             speech_buffer: Vec::new(),
             in_speech: false,
             consecutive_speech: 0,
             consecutive_silence: 0,
-            ring_buffer: Vec::with_capacity(RING_FRAMES),
+            ring_buffer: VecDeque::with_capacity(RING_FRAMES),
             total_speech_frames: 0,
         }
     }
 
     /// Process audio chunks. Returns a complete speech segment when detected.
     pub fn process_chunk(&mut self, chunk: &[f32]) -> Option<Vec<f32>> {
-        self.buffer.extend_from_slice(chunk);
+        self.buffer.extend(chunk.iter().copied());
         let mut result = None;
 
         while self.buffer.len() >= self.frame_size {
-            let frame: Vec<f32> = self.buffer.drain(0..self.frame_size).collect();
+            let frame: Vec<f32> = self.buffer.drain(..self.frame_size).collect();
             let rms = self.processor.calculate_rms(&frame);
 
             // Update adaptive noise floor when not in speech
@@ -83,8 +86,9 @@ impl VADSegmenter {
                     // Include lookback from ring buffer
                     let lookback = self.consecutive_speech.min(self.ring_buffer.len());
                     self.speech_buffer.clear();
-                    for f in &self.ring_buffer[self.ring_buffer.len() - lookback..] {
-                        self.speech_buffer.extend_from_slice(f);
+                    let start = self.ring_buffer.len().saturating_sub(lookback);
+                    for prior_frame in self.ring_buffer.iter().skip(start) {
+                        self.speech_buffer.extend_from_slice(prior_frame);
                     }
                     self.speech_buffer.extend_from_slice(&frame);
                     self.total_speech_frames = lookback + 1;
@@ -118,9 +122,9 @@ impl VADSegmenter {
             }
 
             // Update ring buffer
-            self.ring_buffer.push(frame);
+            self.ring_buffer.push_back(frame);
             if self.ring_buffer.len() > RING_FRAMES {
-                self.ring_buffer.remove(0);
+                self.ring_buffer.pop_front();
             }
         }
 
@@ -132,8 +136,7 @@ impl VADSegmenter {
         if self.in_speech && self.total_speech_frames >= MIN_SPEECH_MS / FRAME_MS {
             self.in_speech = false;
             // Include remaining buffer
-            self.speech_buffer.extend_from_slice(&self.buffer);
-            self.buffer.clear();
+            self.speech_buffer.extend(self.buffer.drain(..));
             Some(std::mem::take(&mut self.speech_buffer))
         } else {
             None
@@ -146,6 +149,7 @@ pub async fn run_stream(
     config: &Config,
     pipe_command: Option<&Vec<String>>,
     shutdown_rx: &mut tokio::sync::mpsc::Receiver<()>,
+    dictation_mode: &str,
 ) -> Result<()> {
     if should_use_mistral_realtime(config) {
         return run_mistral_realtime_stream(config, pipe_command, shutdown_rx).await;
@@ -169,19 +173,46 @@ pub async fn run_stream(
 
     // Load transcription provider once (keeps model in memory for local)
     eprintln!("📦 Loading transcription provider...");
-    let provider = TranscriptionFactory::create_provider(&config.transcription_provider).await?;
-    let provider = Arc::new(Mutex::new(provider));
+    let provider = TranscriptionFactory::create_provider(&config.transcription_provider, config).await?;
+    let provider: SharedProvider = Arc::new(tokio::sync::Mutex::new(provider));
     eprintln!("✅ Provider ready");
 
     // Start continuous audio capture
-    let mut recorder = AudioRecorder::new()?;
-    let audio_rx = recorder.start_continuous()?;
+    let mut recorder = AudioRecorder::from_config(config)?;
+    let mut audio_rx = recorder.start_continuous()?;
+
+    // Process segments through a bounded queue and a single worker.
+    // This prevents task pile-ups when speaking continuously.
+    let (segment_tx, mut segment_rx) = tokio::sync::mpsc::channel::<Vec<f32>>(SEGMENT_QUEUE_CAPACITY);
+    let provider_for_worker = Arc::clone(&provider);
+    let worker_config = config.clone();
+    let worker_pipe = pipe_command.cloned();
+    let worker_mode = dictation_mode.to_string();
+    let worker_beep = BeepPlayer::new(beep_config.clone())?;
+    let worker = tokio::spawn(async move {
+        while let Some(segment) = segment_rx.recv().await {
+            if let Err(e) = process_segment(
+                segment,
+                &worker_config,
+                Arc::clone(&provider_for_worker),
+                worker_pipe.as_ref(),
+                &worker_beep,
+                &worker_mode,
+            )
+            .await
+            {
+                eprintln!("❌ Segment processing error: {}", e);
+            }
+        }
+    });
 
     // Play start beep
     beep_player.play_async(BeepType::RecordingStart).await.ok();
 
-    let mut segmenter = VADSegmenter::new(16000);
+    let mut segmenter = VADSegmenter::new(config.audio_sample_rate);
     let mut last_audio_time = Instant::now();
+    let mut silent_interval = tokio::time::interval(Duration::from_secs(30));
+    silent_interval.tick().await; // Skip first immediate tick
 
     loop {
         tokio::select! {
@@ -189,61 +220,55 @@ pub async fn run_stream(
             _ = shutdown_rx.recv() => {
                 eprintln!("\n🛑 Stream mode shutting down...");
                 if let Some(segment) = segmenter.flush() {
-                    let _ = process_segment(segment, config, Arc::clone(&provider), pipe_command, &beep_player).await;
+                    if segment_tx.try_send(segment).is_err() {
+                        eprintln!("⚠️  Segment queue full during shutdown; dropping trailing segment");
+                    }
                 }
-                beep_player.play_async(BeepType::RecordingStop).await.ok();
                 break;
             }
 
-            // Process audio chunks with timeout
-            _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                match audio_rx.recv_timeout(Duration::from_millis(50)) {
-                    Ok(chunk) => {
+            // Process audio chunks as they arrive (async, non-blocking)
+            chunk = audio_rx.recv() => {
+                match chunk {
+                    Some(chunk) => {
                         last_audio_time = Instant::now();
 
                         if let Some(segment) = segmenter.process_chunk(&chunk) {
-                            // Speech segment complete — process in background
-                            let provider_clone = Arc::clone(&provider);
-                            let config_clone = config.clone();
-                            let pipe_clone = pipe_command.cloned();
-                            let beep_clone = BeepPlayer::new(beep_config.clone())?;
+                            if segment_tx.try_send(segment).is_err() {
+                                eprintln!("⚠️  Segment queue full; dropping incoming segment");
+                            }
+                        }
+                    }
+                    None => {
+                        // Audio channel closed — recorder stopped
+                        eprintln!("\n⚠️  Audio capture ended unexpectedly");
+                        break;
+                    }
+                }
+            }
 
-                            tokio::spawn(async move {
-                                if let Err(e) = process_segment(
-                                    segment,
-                                    &config_clone,
-                                    provider_clone,
-                                    pipe_clone.as_ref(),
-                                    &beep_clone,
-                                ).await {
-                                    eprintln!("❌ Segment processing error: {}", e);
-                                }
-                            });
-                        }
-                    }
-                    Err(_) => {
-                        // No audio chunk received in 50ms — normal
-                        // If no audio for 30 seconds, maybe warn
-                        if last_audio_time.elapsed() > Duration::from_secs(30) {
-                            eprintln!("⚠️  No audio detected for 30s — mic may be muted or disconnected");
-                            last_audio_time = Instant::now(); // Reset to avoid spam
-                        }
-                    }
+            // Warn if no audio received for 30+ seconds
+            _ = silent_interval.tick() => {
+                if last_audio_time.elapsed() > Duration::from_secs(30) {
+                    eprintln!("⚠️  No audio detected for 30s — mic may be muted or disconnected");
+                    last_audio_time = Instant::now();
                 }
             }
         }
     }
 
+    drop(segment_tx);
+    if let Err(e) = worker.await {
+        eprintln!("⚠️  Segment worker terminated unexpectedly: {}", e);
+    }
+
+    beep_player.play_async(BeepType::RecordingStop).await.ok();
     eprintln!("✅ Stream mode exited");
     Ok(())
 }
 
 fn should_use_mistral_realtime(config: &Config) -> bool {
-    config
-        .transcription_provider
-        .eq_ignore_ascii_case("mistral")
-        && !config.batch_mode
-        && !config.transcription_mode.eq_ignore_ascii_case("batch")
+    config.use_mistral_realtime_stt()
 }
 
 fn mistral_realtime_url(config: &Config) -> String {
@@ -357,7 +382,12 @@ async fn run_mistral_realtime_inner(
         .send(Message::Text(session_update.to_string()))
         .await?;
 
-    let mut recorder = AudioRecorder::new()?;
+    if config.audio_sample_rate != 16000 || config.audio_channels != 1 {
+        eprintln!(
+            "⚠️  Mistral realtime requires 16kHz mono capture; overriding AUDIO_SAMPLE_RATE/AUDIO_CHANNELS for this mode"
+        );
+    }
+    let mut recorder = AudioRecorder::with_settings(16000, 1, config.audio_buffer_duration_seconds)?;
     let mut audio_rx = if active_on_start {
         Some(recorder.start_continuous()?)
     } else {
@@ -369,8 +399,18 @@ async fn run_mistral_realtime_inner(
 
     let mut last_audio_time = Instant::now();
     let mut active = active_on_start;
+    let mut silent_interval = tokio::time::interval(Duration::from_secs(30));
+    silent_interval.tick().await;
 
     loop {
+        // Poll audio asynchronously when active, otherwise park the future
+        let audio_fut = async {
+            match audio_rx.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => std::future::pending::<Option<Vec<f32>>>().await,
+            }
+        };
+
         tokio::select! {
             _ = control_rx.recv() => {
                 if exit_on_signal {
@@ -425,25 +465,24 @@ async fn run_mistral_realtime_inner(
                     _ => {}
                 }
             }
-            _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                if let Some(rx) = audio_rx.as_ref() {
-                    match rx.recv_timeout(Duration::from_millis(30)) {
-                        Ok(chunk) => {
-                            last_audio_time = Instant::now();
-                            if active {
-                                let pcm = f32_samples_to_pcm_s16le(&chunk);
-                                let encoded = base64::engine::general_purpose::STANDARD.encode(pcm);
-                                let msg = serde_json::json!({"type":"input_audio.append", "audio": encoded});
-                                ws_write.send(Message::Text(msg.to_string())).await?;
-                            }
-                        }
-                        Err(_) => {
-                            if last_audio_time.elapsed() > Duration::from_secs(30) {
-                                eprintln!("⚠️  No audio detected for 30s — mic may be muted or disconnected");
-                                last_audio_time = Instant::now();
-                            }
-                        }
+            chunk = audio_fut => {
+                if let Some(chunk) = chunk {
+                    last_audio_time = Instant::now();
+                    if active {
+                        let pcm = f32_samples_to_pcm_s16le(&chunk);
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(pcm);
+                        let msg = serde_json::json!({"type":"input_audio.append", "audio": encoded});
+                        ws_write.send(Message::Text(msg.to_string())).await?;
                     }
+                } else {
+                    // Channel closed
+                    audio_rx = None;
+                }
+            }
+            _ = silent_interval.tick() => {
+                if last_audio_time.elapsed() > Duration::from_secs(30) {
+                    eprintln!("⚠️  No audio detected for 30s — mic may be muted or disconnected");
+                    last_audio_time = Instant::now();
                 }
             }
         }
@@ -456,12 +495,13 @@ async fn run_mistral_realtime_inner(
 async fn process_segment(
     samples: Vec<f32>,
     config: &Config,
-    provider: Arc<Mutex<Box<dyn TranscriptionProvider>>>,
+    provider: SharedProvider,
     pipe_command: Option<&Vec<String>>,
     beep_player: &BeepPlayer,
+    dictation_mode: &str,
 ) -> Result<()> {
     // Process audio (trim silence, normalize)
-    let processor = AudioProcessor::new(16000);
+    let processor = AudioProcessor::new(config.audio_sample_rate);
     let processed = match processor.process_for_speech_recognition(&samples) {
         Ok(p) => p,
         Err(e) => {
@@ -470,11 +510,11 @@ async fn process_segment(
         }
     };
 
-    let duration_ms = processed.len() * 1000 / 16000;
+    let duration_ms = processed.len() * 1000 / config.audio_sample_rate as usize;
     eprintln!("🧠 Transcribing {}ms segment...", duration_ms);
 
     // Encode to WAV
-    let encoder = WavEncoder::new(16000, 1);
+    let encoder = WavEncoder::new(config.audio_sample_rate, 1);
     let wav_data = encoder.encode_to_wav(&processed)?;
 
     // Transcribe
@@ -493,9 +533,14 @@ async fn process_segment(
             let text = text.trim();
             if !text.is_empty() {
                 eprintln!("📝 {}", text);
+                let processed_text = process_text(text, &config.text_processing);
+                let processed_text = apply_developer_mode(&processed_text, dictation_mode);
+                if processed_text != text {
+                    eprintln!("🪄 {}", processed_text.trim());
+                }
 
                 if let Some(cmd) = pipe_command {
-                    match command::execute_with_input(cmd, text).await {
+                    match command::execute_with_input(cmd, &processed_text).await {
                         Ok(code) => {
                             if code != 0 {
                                 eprintln!("⚠️  Pipe command exited with code {}", code);
@@ -506,7 +551,7 @@ async fn process_segment(
                         }
                     }
                 } else {
-                    println!("{}", text);
+                    println!("{}", processed_text);
                 }
 
                 beep_player.play_async(BeepType::Success).await.ok();

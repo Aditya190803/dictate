@@ -123,6 +123,14 @@ dictate --pipe-to wl-copy
 # Start dictate and type output directly
 dictate --pipe-to ydotool type --file -
 
+# Command mode: say "fix grammar" / "turn this into bullet points" to transform clipboard text
+dictate --command --pipe-to wl-copy
+
+# Developer modes for local deterministic formatting
+dictate --dictation-mode terminal
+dictate --dictation-mode code-symbols
+dictate --dictation-mode git-commit
+
 # Trigger transcription (if dictate is running)
 pkill --signal SIGUSR1 dictate
 ```
@@ -213,6 +221,75 @@ Configuration is read from `~/.config/dictate/.env` by default. You can override
 dictate --envfile /path/to/custom/.env
 ```
 
+Optional text transformations are read from `text.toml` beside the env file. With the default config, create `~/.config/dictate/text.toml`:
+
+```toml
+[dictionary]
+"whisper flow" = "Wispr Flow"
+"high per land" = "Hyprland"
+"vox stroll" = "Voxtral"
+
+[[snippets]]
+trigger = "calendar link"
+text = "Book a time here: https://cal.com/adi"
+
+[[snippets]]
+trigger = "email signature"
+text = "Best,\nAditya"
+
+[cleanup]
+enabled = true
+fix_spacing = true
+capitalize_sentences = true
+fix_punctuation = true
+spoken_punctuation = true
+remove_fillers = true
+clean_repeated_words = true
+spoken_lists = true
+
+[command_mode]
+clipboard_command = ["wl-paste", "--no-newline"]
+```
+
+Dictionary replacements run before snippets, then optional cleanup runs last. Snippets expand when the final transcription exactly matches the trigger. Mistral realtime delta output is not post-processed yet because it arrives as fragments.
+
+Cleanup options are fully local and deterministic:
+
+- `remove_fillers` removes standalone filler words like `um` and `uh`.
+- `fix_spacing` collapses extra spaces and removes spaces before punctuation.
+- `capitalize_sentences` capitalizes sentence starts.
+- `fix_punctuation` adds a final period to prose-like text missing punctuation.
+- `spoken_punctuation` converts words like `exclamation`, `question mark`, `comma`, and `period` into punctuation.
+- `clean_repeated_words` removes adjacent repeated words.
+- `spoken_lists` converts simple spoken enumerations into bullets.
+
+Inline correction phrases like `actually replace correct with right` are always on. For example, `Is this correct? Actually replace correct with right.` becomes `Is this right?`.
+
+Command mode treats speech as a local instruction for clipboard text:
+
+```bash
+# Say: "fix grammar", "turn this into bullet points", "make this more concise",
+# "rewrite casually", or "summarize this paragraph".
+dictate --command --pipe-to wl-copy
+```
+
+Developer modes format dictation for common CLI/developer text:
+
+```bash
+# "cargo build release features local" -> cargo build --release --features local
+dictate --dictation-mode terminal
+
+# "open paren user id colon string close paren arrow result" -> (user_id: String) -> Result
+dictate --dictation-mode code-symbols
+
+# "fix release audio device" -> fix: release audio device
+dictate --dictation-mode git-commit
+
+# Also supported: markdown, file-path, plain
+dictate --dictation-mode markdown
+dictate --dictation-mode file-path
+```
+
 You can edit config from the CLI:
 
 ```bash
@@ -233,7 +310,15 @@ dictate shortcuts niri --mode clipboard --key Mod+Shift+R
 
 dictate supports three transcription providers: **Mistral** (default), **Groq**, and **Local Whisper**.
 
-Mistral uses true realtime STT by default, including from normal keyboard shortcuts. Set `BATCH_MODE=true` to opt out and use whole-clip batch transcription with the normal audio endpoint.
+Choose how dictation behaves with **`DICTATE_PROFILE`** in `~/.config/dictate/.env`:
+
+| Profile | Behavior |
+|---------|----------|
+| `live_typing` (default) | Mistral realtime — text appears as you speak (`dictate --daemon`) |
+| `smart_paste` | Record until stop, transcribe, LLM polish, paste once (`dictate --daemon`) |
+| `batch_clip` | Whole-clip batch STT, local cleanup only |
+
+Run `dictate config wizard` or `dictate doctor` to verify setup. Legacy `BATCH_MODE=true` maps to `batch_clip`.
 
 ### Mistral (Default)
 

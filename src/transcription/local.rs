@@ -4,11 +4,13 @@ use hound;
 use std::path::Path;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+/// Local transcription provider using whisper.cpp via whisper-rs.
 pub struct LocalWhisperProvider {
     context: WhisperContext,
 }
 
 impl LocalWhisperProvider {
+    /// Load a whisper.cpp model from the given path.
     pub fn new(model_path: &Path) -> Result<Self, TranscriptionError> {
         if !model_path.exists() {
             return Err(TranscriptionError::ConfigurationError(format!(
@@ -18,13 +20,16 @@ impl LocalWhisperProvider {
         }
 
         let model_str = model_path.to_str().ok_or_else(|| {
-            TranscriptionError::ConfigurationError("Invalid model path".to_string())
+            TranscriptionError::ConfigurationError("Invalid model path (non-UTF-8)".to_string())
         })?;
 
-        let ctx = WhisperContext::new_with_params(model_str, WhisperContextParameters::default())
-            .map_err(|e| {
-            TranscriptionError::ConfigurationError(format!("Failed to load model: {}", e))
-        })?;
+        let ctx =
+            WhisperContext::new_with_params(model_str, WhisperContextParameters::default())
+                .map_err(|e| {
+                    TranscriptionError::ConfigurationError(format!(
+                        "Failed to load model: {e}"
+                    ))
+                })?;
 
         Ok(Self { context: ctx })
     }
@@ -37,24 +42,24 @@ impl TranscriptionProvider for LocalWhisperProvider {
         audio_data: Vec<u8>,
         language: Option<String>,
     ) -> Result<String, TranscriptionError> {
-        // Decode WAV to PCM samples
-        let reader = hound::WavReader::new(std::io::Cursor::new(audio_data)).map_err(|e| {
-            TranscriptionError::ConfigurationError(format!("Failed to read WAV data: {}", e))
-        })?;
+        // Decode WAV to PCM f32 samples
+        let reader = hound::WavReader::new(std::io::Cursor::new(audio_data))
+            .map_err(|e| TranscriptionError::ConfigurationError(format!("WAV read error: {e}")))?;
+
         let samples: Result<Vec<f32>, _> = reader
             .into_samples::<i16>()
             .map(|s| s.map(|v| f32::from(v) / f32::from(i16::MAX)))
             .collect();
-        let samples = samples.map_err(|e| {
-            TranscriptionError::ConfigurationError(format!("Failed to parse WAV samples: {}", e))
-        })?;
+
+        let samples = samples
+            .map_err(|e| TranscriptionError::ConfigurationError(format!("WAV sample error: {e}")))?;
 
         let mut state = self.context.create_state().map_err(|e| {
             TranscriptionError::ApiError(ApiErrorDetails {
                 provider: "Local".to_string(),
                 status_code: None,
                 error_code: None,
-                error_message: format!("Failed to create state: {}", e),
+                error_message: format!("Failed to create whisper state: {e}"),
                 raw_response: None,
             })
         })?;
@@ -81,12 +86,11 @@ impl TranscriptionProvider for LocalWhisperProvider {
         let mut result = String::new();
         let num_segments = state.full_n_segments();
         for i in 0..num_segments {
-            if let Some(segment) = state.get_segment(i) {
-                if let Ok(text) = segment.to_str() {
-                    result.push_str(text);
-                }
+            if let Some(text) = state.get_segment(i).and_then(|s| s.to_str().ok()) {
+                result.push_str(text);
             }
         }
+
         Ok(result)
     }
 }

@@ -3,11 +3,13 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::time::Duration;
 
+/// Authentication style for API requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthStyle {
     Bearer,
 }
 
+/// Options for configuring an online transcription provider.
 #[derive(Debug, Clone)]
 pub struct OnlineProviderOptions {
     pub provider_name: &'static str,
@@ -19,27 +21,28 @@ pub struct OnlineProviderOptions {
     pub auth_style: AuthStyle,
 }
 
+/// Provider that transcribes audio via a REST API (Mistral, Groq, etc.).
 pub struct OnlineTranscriptionProvider {
     options: OnlineProviderOptions,
     client: reqwest::Client,
 }
 
 impl OnlineTranscriptionProvider {
+    /// Create a new provider. Builds the HTTP client with the configured timeout.
     pub fn new(options: OnlineProviderOptions) -> Result<Self, TranscriptionError> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(options.timeout_seconds))
             .build()
-            .map_err(|e| {
-                TranscriptionError::NetworkError(NetworkErrorDetails {
-                    provider: options.provider_name.to_string(),
-                    error_type: "HTTP client error".to_string(),
-                    error_message: e.to_string(),
-                })
-            })?;
+            .map_err(|e| TranscriptionError::NetworkError(NetworkErrorDetails {
+                provider: options.provider_name.to_string(),
+                error_type: "HTTP client error".to_string(),
+                error_message: e.to_string(),
+            }))?;
 
         Ok(Self { options, client })
     }
 
+    /// Perform a single transcription attempt.
     async fn transcribe_attempt(
         &self,
         audio_data: &[u8],
@@ -53,13 +56,11 @@ impl OnlineTranscriptionProvider {
         let audio_part = reqwest::multipart::Part::bytes(audio_data.to_vec())
             .file_name("audio.wav")
             .mime_str("audio/wav")
-            .map_err(|e| {
-                TranscriptionError::NetworkError(NetworkErrorDetails {
-                    provider: self.options.provider_name.to_string(),
-                    error_type: "HTTP client error".to_string(),
-                    error_message: e.to_string(),
-                })
-            })?;
+            .map_err(|e| TranscriptionError::NetworkError(NetworkErrorDetails {
+                provider: self.options.provider_name.to_string(),
+                error_type: "HTTP client error".to_string(),
+                error_message: e.to_string(),
+            }))?;
 
         let mut form = reqwest::multipart::Form::new()
             .part("file", audio_part)
@@ -77,17 +78,18 @@ impl OnlineTranscriptionProvider {
         };
 
         let response = request.send().await.map_err(|e| {
+            let error_type = if e.is_timeout() {
+                "Request timeout"
+            } else if e.is_connect() {
+                "Connection failed"
+            } else if e.is_request() {
+                "Request error"
+            } else {
+                "Network error"
+            };
             TranscriptionError::NetworkError(NetworkErrorDetails {
                 provider: self.options.provider_name.to_string(),
-                error_type: if e.is_timeout() {
-                    "Request timeout".to_string()
-                } else if e.is_connect() {
-                    "Connection failed".to_string()
-                } else if e.is_request() {
-                    "Request error".to_string()
-                } else {
-                    "Network error".to_string()
-                },
+                error_type: error_type.to_string(),
                 error_message: e.to_string(),
             })
         })?;
@@ -104,21 +106,26 @@ impl OnlineTranscriptionProvider {
         if status.is_success() {
             let json: Value = serde_json::from_str(&response_text)
                 .map_err(|e| TranscriptionError::JsonError(e.to_string()))?;
-            let text = json.get("text").and_then(|t| t.as_str()).ok_or_else(|| {
-                TranscriptionError::ApiError(ApiErrorDetails {
-                    provider: self.options.provider_name.to_string(),
-                    status_code: Some(status.as_u16()),
-                    error_code: None,
-                    error_message: "No text field in response".to_string(),
-                    raw_response: Some(response_text.clone()),
-                })
-            })?;
-            return Ok(text.to_string());
+            return json
+                .get("text")
+                .and_then(|t| t.as_str())
+                .map(|t| t.to_string())
+                .ok_or_else(|| {
+                    TranscriptionError::ApiError(ApiErrorDetails {
+                        provider: self.options.provider_name.to_string(),
+                        status_code: Some(status.as_u16()),
+                        error_code: None,
+                        error_message: "No text field in response".to_string(),
+                        raw_response: Some(response_text),
+                    })
+                });
         }
 
         let (error_code, error_message) = parse_error_body(&response_text);
 
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        if status == reqwest::StatusCode::UNAUTHORIZED
+            || status == reqwest::StatusCode::FORBIDDEN
+        {
             return Err(TranscriptionError::AuthenticationFailed {
                 provider: self.options.provider_name.to_string(),
                 details: Some(error_message),
@@ -147,54 +154,52 @@ impl TranscriptionProvider for OnlineTranscriptionProvider {
             return Err(TranscriptionError::FileTooLarge(audio_data.len()));
         }
 
-        let mut retries = 0;
-        loop {
+        let mut last_err = None;
+        for attempt in 1..=self.options.max_retries.saturating_add(1) {
             match self
                 .transcribe_attempt(&audio_data, language.as_deref())
                 .await
             {
                 Ok(result) => return Ok(result),
                 Err(e) => {
-                    retries += 1;
-                    if retries > self.options.max_retries {
-                        return Err(e);
-                    }
-
+                    // Don't retry auth failures
                     if matches!(e, TranscriptionError::AuthenticationFailed { .. }) {
                         return Err(e);
                     }
-
-                    let delay = Duration::from_millis(1000 * (1 << (retries - 1)).min(8));
-                    tokio::time::sleep(delay).await;
+                    last_err = Some(e);
+                    if attempt <= self.options.max_retries {
+                        let delay = Duration::from_millis(1000 * (1 << (attempt - 1)).min(8));
+                        tokio::time::sleep(delay).await;
+                    }
                 }
             }
         }
+
+        Err(last_err.unwrap_or_else(|| {
+            TranscriptionError::NetworkError(NetworkErrorDetails {
+                provider: self.options.provider_name.to_string(),
+                error_type: "Retry exhausted".to_string(),
+                error_message: "All transcription attempts failed".to_string(),
+            })
+        }))
     }
 }
 
+/// Parse an API error response body into (error_code, error_message).
 fn parse_error_body(response_text: &str) -> (Option<String>, String) {
     if let Ok(json) = serde_json::from_str::<Value>(response_text) {
-        let code = json
-            .get("error")
-            .and_then(|e| e.get("code"))
+        let error = json.get("error");
+        let code = error
+            .and_then(|e| e.get("code").or_else(|| e.get("type")))
             .and_then(|c| c.as_str())
-            .or_else(|| {
-                json.get("error")
-                    .and_then(|e| e.get("type"))
-                    .and_then(|t| t.as_str())
-            })
-            .map(std::string::ToString::to_string);
-
-        let message = json
-            .get("error")
+            .map(|s| s.to_string());
+        let message = error
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
             .unwrap_or(response_text)
             .to_string();
-
         return (code, message);
     }
-
     (None, response_text.to_string())
 }
 
@@ -216,8 +221,7 @@ mod tests {
 
     #[test]
     fn test_provider_creation() {
-        let provider = OnlineTranscriptionProvider::new(test_options());
-        assert!(provider.is_ok());
+        assert!(OnlineTranscriptionProvider::new(test_options()).is_ok());
     }
 
     #[tokio::test]

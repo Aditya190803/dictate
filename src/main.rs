@@ -24,6 +24,7 @@ mod command_mode;
 mod config;
 mod config_cli;
 mod developer_modes;
+mod llm_polish;
 mod profile;
 mod streaming;
 mod text_processing;
@@ -42,6 +43,10 @@ use beep::{BeepConfig, BeepPlayer, BeepType};
 use config_cli::{print_shortcut, run_config_command, ConfigCommand, ShortcutArgs};
 #[cfg(not(test))]
 use developer_modes::apply_developer_mode;
+#[cfg(not(test))]
+use llm_polish::{handle_polish_failure, polish_transcript};
+#[cfg(not(test))]
+use profile::DictateProfile;
 #[cfg(not(test))]
 use text_processing::process_text;
 #[cfg(not(test))]
@@ -177,6 +182,36 @@ async fn download_model(model: &str) -> Result<PathBuf> {
 // ─── Audio transcription pipeline ───────────────────────────────────────────
 
 #[cfg(not(test))]
+async fn finalize_transcribed_text(
+    text: &str,
+    config: &Config,
+    command_mode_enabled: bool,
+    dictation_mode: &str,
+) -> Result<String> {
+    if command_mode_enabled {
+        return command_mode::run_command_mode(text, None, &config.text_processing.command_mode).await;
+    }
+
+    let local = process_text(text, &config.text_processing);
+    let local = apply_developer_mode(&local, dictation_mode);
+
+    if config.profile != DictateProfile::SmartPaste {
+        return Ok(local);
+    }
+
+    let polish = &config.text_processing.polish;
+    if !polish.effective_enabled(true) {
+        return Ok(local);
+    }
+
+    eprintln!("✨ Polishing…");
+    match polish_transcript(&local, config, polish, dictation_mode).await {
+        Ok(p) => Ok(p),
+        Err(e) => Ok(handle_polish_failure(polish, &local, &e)),
+    }
+}
+
+#[cfg(not(test))]
 async fn process_audio_for_transcription(
     audio_data: Vec<f32>,
     sample_rate: u32,
@@ -244,29 +279,26 @@ async fn process_audio_for_transcription(
             }
 
             info!("Transcription: \"{text}\"");
-            let processed_text = if command_mode_enabled {
-                match command_mode::run_command_mode(
-                    text,
-                    None,
-                    &config.text_processing.command_mode,
-                )
-                .await
-                {
-                    Ok(t) => t,
-                    Err(e) => {
-                        error!("Command mode failed: {e}");
-                        beep_player.play_async(BeepType::Error).await.ok();
-                        return Ok(1);
-                    }
+            let processed_text = match finalize_transcribed_text(
+                text,
+                config,
+                command_mode_enabled,
+                dictation_mode,
+            )
+            .await
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("Text processing failed: {e}");
+                    beep_player.play_async(BeepType::Error).await.ok();
+                    return Ok(1);
                 }
-            } else {
-                let t = process_text(text, &config.text_processing);
-                let t = apply_developer_mode(&t, dictation_mode);
-                if t != text {
-                    debug!("Text post-processing applied: \"{t}\"");
-                }
-                t
             };
+
+            if processed_text.is_empty() && config.profile == DictateProfile::SmartPaste {
+                beep_player.play_async(BeepType::Error).await.ok();
+                return Ok(1);
+            }
 
             let code = pipe_and_exit(pipe_command, &processed_text).await;
             beep_player.play_async(BeepType::Success).await.ok();
@@ -578,28 +610,24 @@ async fn process_with_provider(
                 0
             } else {
                 info!("📝 {text}");
-                let processed_text = if ctx.command_mode_enabled {
-                    match command_mode::run_command_mode(
-                        text,
-                        None,
-                        &ctx.config.text_processing.command_mode,
-                    )
-                    .await
-                    {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!("Command mode failed: {e}");
-                            return Ok(1);
-                        }
+                let processed_text = match finalize_transcribed_text(
+                    text,
+                    ctx.config,
+                    ctx.command_mode_enabled,
+                    ctx.dictation_mode,
+                )
+                .await
+                {
+                    Ok(t) => t,
+                    Err(e) => {
+                        error!("Text processing failed: {e}");
+                        return Ok(1);
                     }
-                } else {
-                    let t = process_text(text, &ctx.config.text_processing);
-                    let t = apply_developer_mode(&t, ctx.dictation_mode);
-                    if t != text {
-                        debug!("🪄 {t}");
-                    }
-                    t
                 };
+
+                if processed_text.is_empty() && ctx.config.profile == DictateProfile::SmartPaste {
+                    return Ok(1);
+                }
 
                 if let Some(cmd) = ctx.pipe_command {
                     command::execute_with_input(cmd, &processed_text).await.unwrap_or_else(|e| {

@@ -45,7 +45,58 @@ impl CommandModeConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct PolishConfig {
+    #[serde(default = "default_polish_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_polish_model")]
+    pub model: String,
+    #[serde(default = "default_polish_temperature")]
+    pub temperature: f32,
+    #[serde(default = "default_polish_max_tokens")]
+    pub max_tokens: u32,
+    #[serde(default)]
+    pub system_prompt: String,
+    #[serde(default = "default_on_failure")]
+    pub on_failure: String,
+}
+
+fn default_polish_enabled() -> bool {
+    true
+}
+fn default_polish_model() -> String {
+    "mistral-small-latest".to_string()
+}
+fn default_polish_temperature() -> f32 {
+    0.2
+}
+fn default_polish_max_tokens() -> u32 {
+    2048
+}
+fn default_on_failure() -> String {
+    "fallback".to_string()
+}
+
+impl Default for PolishConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_polish_enabled(),
+            model: default_polish_model(),
+            temperature: default_polish_temperature(),
+            max_tokens: default_polish_max_tokens(),
+            system_prompt: String::new(),
+            on_failure: default_on_failure(),
+        }
+    }
+}
+
+impl PolishConfig {
+    pub fn effective_enabled(&self, profile_wants_polish: bool) -> bool {
+        profile_wants_polish && self.enabled
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct TextProcessingConfig {
     #[serde(default)]
     pub dictionary: HashMap<String, String>,
@@ -55,6 +106,8 @@ pub struct TextProcessingConfig {
     pub cleanup: CleanupConfig,
     #[serde(default)]
     pub command_mode: CommandModeConfig,
+    #[serde(default)]
+    pub polish: PolishConfig,
 }
 
 pub fn process_text(input: &str, config: &TextProcessingConfig) -> String {

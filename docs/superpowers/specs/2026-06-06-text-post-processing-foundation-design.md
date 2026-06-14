@@ -59,8 +59,7 @@ Add `src/text_processing.rs`:
 
 Extend `Config` with:
 
-- `dictionary: HashMap<String, String>`
-- `snippets: Vec<Snippet>`
+- `text_processing: TextProcessingConfig` (dictionary, snippets, cleanup loaded from `text.toml`)
 
 `Config` loads `.env` first, then attempts to load `text.toml` from the `.env` directory.
 

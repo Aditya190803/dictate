@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use log::debug;
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
@@ -10,11 +11,15 @@ pub async fn execute_capture(command_args: &[String]) -> Result<String> {
         return Err(anyhow!("No command provided"));
     }
 
-    let output = Command::new(&command_args[0])
-        .args(&command_args[1..])
-        .output()
-        .await
-        .map_err(|e| anyhow!("Failed to execute command '{}': {}", command_args[0], e))?;
+    let output = tokio::time::timeout(
+        Duration::from_secs(30),
+        Command::new(&command_args[0])
+            .args(&command_args[1..])
+            .output(),
+    )
+    .await
+    .map_err(|_| anyhow!("Command '{}' timed out after 30s", command_args[0]))?
+    .map_err(|e| anyhow!("Failed to execute command '{}': {}", command_args[0], e))?;
 
     if !output.status.success() {
         return Err(anyhow!(

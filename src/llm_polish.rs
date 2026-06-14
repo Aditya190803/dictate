@@ -138,19 +138,32 @@ pub fn handle_polish_failure(
     }
 }
 
+fn is_fence_lang_tag(line: &str) -> bool {
+    let line = line.trim();
+    !line.is_empty()
+        && line
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 fn strip_wrapping_quotes(s: &str) -> String {
     let t = s.trim();
     if (t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')) {
-        t[1..t.len() - 1].trim().to_string()
-    } else if t.starts_with("```") {
-        t.trim_start_matches('`')
-            .trim_start_matches(|c: char| c.is_alphanumeric() || c == '\n')
-            .trim_end_matches('`')
-            .trim()
-            .to_string()
-    } else {
-        t.to_string()
+        return t[1..t.len() - 1].trim().to_string();
     }
+    if let Some(inner) = t
+        .strip_prefix("```")
+        .and_then(|rest| rest.strip_suffix("```"))
+    {
+        let inner = inner.trim();
+        if let Some((first, rest)) = inner.split_once('\n') {
+            if is_fence_lang_tag(first) {
+                return rest.trim().to_string();
+            }
+        }
+        return inner.to_string();
+    }
+    t.to_string()
 }
 
 #[cfg(test)]

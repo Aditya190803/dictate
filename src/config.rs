@@ -305,9 +305,19 @@ mod tests {
 
     fn clear_env_vars() {
         for key in [
+            "DICTATE_PROFILE",
+            "BATCH_MODE",
+            "TRANSCRIPTION_MODE",
+            "SHORTCUT_OUTPUT",
+            "OUTPUT_MODE",
+            "SHORTCUT_KEY",
+            "SHORTCUT_DESKTOP",
             "MISTRAL_API_KEY",
             "MISTRAL_BASE_URL",
             "MISTRAL_MODEL",
+            "MISTRAL_REALTIME_MODEL",
+            "MISTRAL_REALTIME_BASE_URL",
+            "MISTRAL_REALTIME_DELAY_MS",
             "GROQ_API_KEY",
             "GROQ_BASE_URL",
             "GROQ_MODEL",

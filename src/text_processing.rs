@@ -117,6 +117,8 @@ pub fn process_text(input: &str, config: &TextProcessingConfig) -> String {
     apply_cleanup(&text, &config.cleanup)
 }
 
+const MAX_REPLACE_ITERATIONS: usize = 64;
+
 pub fn apply_dictionary(input: &str, dictionary: &HashMap<String, String>) -> String {
     let mut text = input.to_string();
     let mut entries: Vec<(&String, &String)> = dictionary
@@ -136,7 +138,7 @@ pub fn apply_dictionary(input: &str, dictionary: &HashMap<String, String>) -> St
             continue;
         };
 
-        loop {
+        for _ in 0..MAX_REPLACE_ITERATIONS {
             let next = regex
                 .replace_all(&text, |captures: &Captures<'_>| {
                     format!("{}{}{}", &captures[1], replacement, &captures[3])
@@ -252,7 +254,7 @@ fn replace_correction_target(input: &str, from: &str, to: &str) -> String {
     };
 
     let mut text = input.to_string();
-    loop {
+    for _ in 0..MAX_REPLACE_ITERATIONS {
         let next = regex
             .replace_all(&text, |captures: &Captures<'_>| {
                 let right = &captures[3];
@@ -271,6 +273,7 @@ fn replace_correction_target(input: &str, from: &str, to: &str) -> String {
         }
         text = next;
     }
+    text
 }
 
 pub fn apply_cleanup(input: &str, cleanup: &CleanupConfig) -> String {
@@ -320,7 +323,7 @@ fn remove_fillers(input: &str) -> String {
     };
 
     let mut text = input.to_string();
-    loop {
+    for _ in 0..MAX_REPLACE_ITERATIONS {
         let next = regex
             .replace_all(&text, |captures: &Captures<'_>| {
                 let left = &captures[1];
@@ -338,6 +341,7 @@ fn remove_fillers(input: &str) -> String {
         }
         text = next;
     }
+    fix_spacing(&text)
 }
 
 fn clean_repeated_words(input: &str) -> String {

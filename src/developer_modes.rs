@@ -178,12 +178,20 @@ fn code_symbols_mode(input: &str) -> String {
                 output.push(")".to_string());
                 index += 2;
             }
-            ("open", Some("brace" | "bracket")) | ("left", Some("brace" | "bracket")) => {
+            ("open", Some("brace")) | ("left", Some("brace")) => {
                 output.push("{".to_string());
                 index += 2;
             }
-            ("close", Some("brace" | "bracket")) | ("right", Some("brace" | "bracket")) => {
+            ("close", Some("brace")) | ("right", Some("brace")) => {
                 output.push("}".to_string());
+                index += 2;
+            }
+            ("open", Some("bracket")) | ("left", Some("bracket")) => {
+                output.push("[".to_string());
+                index += 2;
+            }
+            ("close", Some("bracket")) | ("right", Some("bracket")) => {
+                output.push("]".to_string());
                 index += 2;
             }
             ("colon", _) => {
@@ -247,7 +255,7 @@ fn file_path_mode(input: &str) -> String {
             "underscore" => "_".to_string(),
             "tilde" => "~".to_string(),
             "home" => "~".to_string(),
-            other => other.to_string(),
+            _ => token.to_string(),
         })
         .collect::<Vec<_>>()
         .join("")
@@ -360,7 +368,7 @@ mod tests {
                 "home slash projects slash dictate slash read me dot md",
                 "file-path"
             ),
-            "~/projects/dictate/readme.md"
+            "~/projects/dictate/README.md"
         );
     }
 

@@ -139,6 +139,7 @@ async fn download_model(model: &str) -> Result<PathBuf> {
     let dir = Config::model_dir();
     tokio::fs::create_dir_all(&dir).await?;
     let path = dir.join(model);
+    let temp_path = dir.join(format!("{model}.download"));
 
     let resp = reqwest::get(&url).await.map_err(|e| anyhow!("{e}"))?;
     if !resp.status().is_success() {
@@ -146,7 +147,7 @@ async fn download_model(model: &str) -> Result<PathBuf> {
     }
 
     let total_size = resp.content_length();
-    let mut file = tokio::fs::File::create(&path).await?;
+    let mut file = tokio::fs::File::create(&temp_path).await?;
     let mut stream = resp.bytes_stream();
     let mut downloaded = 0u64;
     let start = Instant::now();
@@ -183,6 +184,7 @@ async fn download_model(model: &str) -> Result<PathBuf> {
     }
 
     file.flush().await?;
+    tokio::fs::rename(&temp_path, &path).await?;
     info!("Model downloaded to {}", path.display());
     Ok(path)
 }
@@ -468,6 +470,7 @@ async fn record_result(
         }
         Err(e) => {
             error!("Failed to get audio data: {e}");
+            std::process::exit(1);
         }
     }
 }
@@ -502,8 +505,11 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
                     info!("Recording started");
                     beep_player.play_async(BeepType::RecordingStart).await.ok();
                     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
-                    recorder.start_recording().ok();
-                    is_recording = true;
+                    if recorder.start_recording().is_err() {
+                        error!("Failed to start recording");
+                    } else {
+                        is_recording = true;
+                    }
                 } else {
                     info!("Recording stopped, transcribing...");
                     is_recording = false;
@@ -687,7 +693,7 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             Commands::Setup { quick } => {
-                setup_tui::run_setup(*quick)?;
+                setup_tui::run_setup(*quick, &envfile)?;
                 return Ok(());
             }
         }

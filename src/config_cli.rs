@@ -252,12 +252,20 @@ fn run_config_wizard(path: &PathBuf, options: &WizardOptions) -> Result<()> {
     .replace(' ', "_");
     set_config_value(path, "profile", &profile)?;
 
+    if profile == "smart_paste" && provider != "mistral" {
+        anyhow::bail!(
+            "Profile smart_paste requires provider mistral (for LLM polish). Choose mistral or another profile."
+        );
+    }
+
     match profile.as_str() {
-        "smart_paste" => {
+        "smart_paste" | "batch_clip" => {
             set_config_value(path, "batch-mode", "true")?;
+            set_config_value(path, "transcription-mode", "auto")?;
         }
-        "batch_clip" => {
-            set_config_value(path, "batch-mode", "true")?;
+        "live_typing" => {
+            set_config_value(path, "batch-mode", "false")?;
+            set_config_value(path, "transcription-mode", "auto")?;
         }
         _ => {
             set_config_value(path, "batch-mode", "false")?;
@@ -599,7 +607,7 @@ pub fn print_shortcut(args: &ShortcutArgs) {
             println!("# 1. Settings → Keyboard → Keyboard Shortcuts");
             println!("# 2. Scroll to bottom, click +");
             println!("# 3. Name: Dictate ({})", mode_name(&args.mode));
-            println!("#    Command: sh -c '{shell}'");
+            println!(r#"#    Command: sh -c "{shell}""#);
             println!("#    Shortcut: {}", args.key);
         }
         ShortcutDesktop::Kde | ShortcutDesktop::Sway => {

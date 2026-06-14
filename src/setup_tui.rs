@@ -1,14 +1,15 @@
 //! Interactive setup flow (`dictate setup`) for non-technical users.
 
 use crate::config_cli::{
-    ensure_config_file, get_default_config_path, print_shortcut, set_config_value, ShortcutArgs,
-    ShortcutDesktop, ShortcutMode,
+    ensure_config_file, print_shortcut, set_config_value, ShortcutArgs, ShortcutDesktop,
+    ShortcutMode,
 };
 use anyhow::Result;
 use inquire::{Confirm, Select, Text};
+use std::path::Path;
 
-pub fn run_setup(quick: bool) -> Result<()> {
-    let path = get_default_config_path();
+pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
+    let path = env_path.to_path_buf();
     ensure_config_file(&path)?;
 
     println!("\n  dictate setup\n");
@@ -33,12 +34,22 @@ pub fn run_setup(quick: bool) -> Result<()> {
             .to_string()
     };
 
+    if profile_key == "smart_paste" && provider != "mistral" {
+        anyhow::bail!("Smart paste requires the mistral provider.");
+    }
+
     set_config_value(&path, "provider", &provider)?;
     set_config_value(&path, "profile", profile_key)?;
 
     match profile_key {
-        "smart_paste" | "batch_clip" => set_config_value(&path, "batch-mode", "true")?,
-        _ => set_config_value(&path, "batch-mode", "false")?,
+        "smart_paste" | "batch_clip" => {
+            set_config_value(&path, "batch-mode", "true")?;
+            set_config_value(&path, "transcription-mode", "auto")?;
+        }
+        _ => {
+            set_config_value(&path, "batch-mode", "false")?;
+            set_config_value(&path, "transcription-mode", "auto")?;
+        }
     }
 
     if provider == "mistral" {

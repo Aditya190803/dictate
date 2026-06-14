@@ -160,10 +160,12 @@ fn play_beep_internal(beep_type: BeepType, volume: f32) -> Result<()> {
 
     let playing = Arc::new(AtomicBool::new(true));
     let flag = playing.clone();
+    let phase = Arc::new(std::sync::Mutex::new(0.0f32));
     let err_cb = |err: cpal::StreamError| warn!("Beep stream error: {err}");
 
     let result = match config.sample_format() {
         cpal::SampleFormat::F32 => {
+            let phase = Arc::clone(&phase);
             let cb = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 fill_audio(
                     data,
@@ -173,11 +175,13 @@ fn play_beep_internal(beep_type: BeepType, volume: f32) -> Result<()> {
                     volume,
                     &flag,
                     desc,
+                    &phase,
                 );
             };
             device.build_output_stream(&config.into(), cb, err_cb, None)
         }
         cpal::SampleFormat::I16 => {
+            let phase = Arc::clone(&phase);
             let cb = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
                 fill_audio(
                     data,
@@ -187,6 +191,7 @@ fn play_beep_internal(beep_type: BeepType, volume: f32) -> Result<()> {
                     volume,
                     &flag,
                     desc,
+                    &phase,
                 );
             };
             device.build_output_stream(&config.into(), cb, err_cb, None)
@@ -235,7 +240,7 @@ impl Sample for i16 {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
 fn fill_audio<T: Sample>(
     data: &mut [T],
     sample_count: usize,
@@ -244,8 +249,9 @@ fn fill_audio<T: Sample>(
     volume: f32,
     playing: &AtomicBool,
     desc: BeepDescriptor,
+    phase_shared: &std::sync::Mutex<f32>,
 ) {
-    let mut phase = 0.0f32;
+    let mut phase = *phase_shared.lock().unwrap_or_else(|e| e.into_inner());
 
     for (idx, frame) in data.chunks_mut(channels).enumerate() {
         if idx >= sample_count {
@@ -273,6 +279,8 @@ fn fill_audio<T: Sample>(
             }
         }
     }
+
+    *phase_shared.lock().unwrap_or_else(|e| e.into_inner()) = phase;
 }
 
 /// ─── Tests ──────────────────────────────────────────────────────────────────

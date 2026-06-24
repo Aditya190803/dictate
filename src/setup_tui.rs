@@ -54,6 +54,11 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
         if beeps { "true" } else { "false" },
     )?;
 
+    let pill = Confirm::new("Show recording pill while dictating? (experimental)")
+        .with_default(false)
+        .prompt()?;
+    set_config_value(&path, "enable-overlay", if pill { "true" } else { "false" })?;
+
     println!("\n✓ Saved {}\n", path.display());
     println!("Two shortcuts:");
     println!("  Live  — realtime typing, no context edits");
@@ -62,5 +67,10 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
     print_dual_shortcuts(&ShortcutDesktop::Hyprland, "SUPER,R", "SUPER,SHIFT,R");
 
     println!("\nRun: dictate doctor");
+    if pill {
+        println!(
+            "Pill: `cargo build --release --features overlay` — daemon auto-starts dictate-overlay when ENABLE_OVERLAY=true."
+        );
+    }
     Ok(())
 }

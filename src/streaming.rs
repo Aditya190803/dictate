@@ -12,6 +12,7 @@ use crate::typing::OutputBackend;
 use crate::wav::WavEncoder;
 use anyhow::{anyhow, Result};
 use base64::Engine;
+use dictate::overlay_ipc::{level_from_samples, OverlayPublisher, OverlayState};
 use futures::{SinkExt, StreamExt};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -410,6 +411,12 @@ async fn run_mistral_realtime_inner(
     let mut active = active_on_start;
     let mut silent_interval = tokio::time::interval(Duration::from_secs(30));
     silent_interval.tick().await;
+    let overlay = OverlayPublisher::from_env_enabled(config.enable_overlay);
+    overlay.set_state(if active_on_start {
+        OverlayState::Listening
+    } else {
+        OverlayState::Idle
+    });
 
     loop {
         // Poll audio asynchronously when active, otherwise park the future
@@ -437,12 +444,14 @@ async fn run_mistral_realtime_inner(
                     eprintln!("\n▶️  Realtime typing started");
                     audio_rx = Some(recorder.start_continuous()?);
                     last_audio_time = Instant::now();
+                    overlay.set_state(OverlayState::Listening);
                     beep_player.play_async(BeepType::RecordingStart).await.ok();
                 } else {
                     eprintln!("\n⏹️  Realtime typing stopped");
                     ws_write.send(Message::Text(serde_json::json!({"type":"input_audio.flush"}).to_string())).await.ok();
                     recorder.stop_recording().ok();
                     audio_rx = None;
+                    overlay.set_state(OverlayState::Idle);
                     beep_player.play_async(BeepType::RecordingStop).await.ok();
                 }
             }
@@ -478,6 +487,7 @@ async fn run_mistral_realtime_inner(
                 if let Some(chunk) = chunk {
                     last_audio_time = Instant::now();
                     if active {
+                        overlay.set_level(level_from_samples(&chunk));
                         let pcm = f32_samples_to_pcm_s16le(&chunk);
                         let encoded = base64::engine::general_purpose::STANDARD.encode(pcm);
                         let msg = serde_json::json!({"type":"input_audio.append", "audio": encoded});

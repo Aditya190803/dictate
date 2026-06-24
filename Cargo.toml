@@ -6,9 +6,14 @@ description = "Speech-to-text tool for Wayland with stdout output"
 license = "GPL-3.0-or-later"
 authors = ["Artur Roszczyk <artur.roszczyk@gmail.com>"]
 
+[lib]
+name = "dictate"
+path = "src/lib.rs"
+
 [features]
 default = []
 local = ["dep:whisper-rs", "dep:hound"]
+overlay = ["dep:gtk4", "dep:gtk4-layer-shell"]
 
 [dependencies]
 # Core dependencies (essential)
@@ -46,6 +51,10 @@ regex = "1.10"
 # Async trait support
 async-trait = "0.1"
 
+# Recording pill (optional binary; real Wayland layer-shell overlay)
+gtk4 = { version = "0.11", optional = true }
+gtk4-layer-shell = { version = "0.8", optional = true }
+
 
 [dev-dependencies]
 tempfile = "3.0"
@@ -56,6 +65,11 @@ tokio-test = "0.4"
 [[bin]]
 name = "dictate"
 path = "src/main.rs"
+
+[[bin]]
+name = "dictate-overlay"
+path = "src/bin/dictate-overlay.rs"
+required-features = ["overlay"]
 
 [profile.release]
 opt-level = 3

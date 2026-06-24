@@ -1,7 +1,7 @@
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use log::warn;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -160,12 +160,14 @@ fn play_beep_internal(beep_type: BeepType, volume: f32) -> Result<()> {
 
     let playing = Arc::new(AtomicBool::new(true));
     let flag = playing.clone();
+    let frame_pos = Arc::new(AtomicUsize::new(0));
     let phase = Arc::new(std::sync::Mutex::new(0.0f32));
     let err_cb = |err: cpal::StreamError| warn!("Beep stream error: {err}");
 
     let result = match config.sample_format() {
         cpal::SampleFormat::F32 => {
             let phase = Arc::clone(&phase);
+            let frame_pos = Arc::clone(&frame_pos);
             let cb = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 fill_audio(
                     data,
@@ -174,6 +176,7 @@ fn play_beep_internal(beep_type: BeepType, volume: f32) -> Result<()> {
                     channels,
                     volume,
                     &flag,
+                    &frame_pos,
                     desc,
                     &phase,
                 );
@@ -182,6 +185,7 @@ fn play_beep_internal(beep_type: BeepType, volume: f32) -> Result<()> {
         }
         cpal::SampleFormat::I16 => {
             let phase = Arc::clone(&phase);
+            let frame_pos = Arc::clone(&frame_pos);
             let cb = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
                 fill_audio(
                     data,
@@ -190,6 +194,7 @@ fn play_beep_internal(beep_type: BeepType, volume: f32) -> Result<()> {
                     channels,
                     volume,
                     &flag,
+                    &frame_pos,
                     desc,
                     &phase,
                 );
@@ -248,12 +253,14 @@ fn fill_audio<T: Sample>(
     channels: usize,
     volume: f32,
     playing: &AtomicBool,
+    frame_pos: &AtomicUsize,
     desc: BeepDescriptor,
     phase_shared: &std::sync::Mutex<f32>,
 ) {
     let mut phase = *phase_shared.lock().unwrap_or_else(|e| e.into_inner());
 
-    for (idx, frame) in data.chunks_mut(channels).enumerate() {
+    for frame in data.chunks_mut(channels) {
+        let idx = frame_pos.fetch_add(1, Ordering::Relaxed);
         if idx >= sample_count {
             playing.store(false, Ordering::Relaxed);
             frame.fill(T::default());
@@ -341,5 +348,38 @@ mod tests {
 
         let desc = BeepDescriptor::from(BeepType::Success);
         assert_eq!(desc.wobble(0.5), 0.0);
+    }
+
+    /// CPAL invokes the callback in multiple buffers; frame index must be cumulative.
+    #[test]
+    fn test_fill_audio_finishes_across_multiple_buffers() {
+        let playing = AtomicBool::new(true);
+        let frame_pos = AtomicUsize::new(0);
+        let phase = std::sync::Mutex::new(0.0f32);
+        let desc = BeepDescriptor::from(BeepType::RecordingStart);
+        let sample_count = 100usize;
+        let channels = 2usize;
+        let mut buf = vec![0.0f32; 64 * channels];
+
+        while playing.load(Ordering::Relaxed) {
+            fill_audio(
+                &mut buf,
+                sample_count,
+                48_000.0,
+                channels,
+                0.1,
+                &playing,
+                &frame_pos,
+                desc,
+                &phase,
+            );
+            assert!(
+                frame_pos.load(Ordering::Relaxed) <= sample_count + buf.len() / channels + 1,
+                "should not run unbounded"
+            );
+        }
+
+        assert!(!playing.load(Ordering::Relaxed));
+        assert!(frame_pos.load(Ordering::Relaxed) >= sample_count);
     }
 }

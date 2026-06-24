@@ -3,15 +3,19 @@ use crate::audio_processing::AudioProcessor;
 use crate::beep::{BeepConfig, BeepPlayer, BeepType};
 use crate::command;
 use crate::config::Config;
+use crate::context_session::handle_final_segment;
 use crate::developer_modes::apply_developer_mode;
 use crate::text_processing::process_text;
+use crate::transcript::TranscriptBuffer;
 use crate::transcription::{SharedProvider, TranscriptionFactory};
+use crate::typing::OutputBackend;
 use crate::wav::WavEncoder;
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use futures::{SinkExt, StreamExt};
 use std::collections::VecDeque;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -191,6 +195,7 @@ pub async fn run_stream(
     let worker_pipe = pipe_command.cloned();
     let worker_mode = dictation_mode.to_string();
     let worker_beep = BeepPlayer::new(beep_config.clone())?;
+    let session_buffer = Arc::new(Mutex::new(TranscriptBuffer::new()));
     let worker = tokio::spawn(async move {
         while let Some(segment) = segment_rx.recv().await {
             if let Err(e) = process_segment(
@@ -200,6 +205,7 @@ pub async fn run_stream(
                 worker_pipe.as_ref(),
                 &worker_beep,
                 &worker_mode,
+                Arc::clone(&session_buffer),
             )
             .await
             {
@@ -502,6 +508,7 @@ async fn process_segment(
     pipe_command: Option<&Vec<String>>,
     beep_player: &BeepPlayer,
     dictation_mode: &str,
+    session_buffer: Arc<Mutex<TranscriptBuffer>>,
 ) -> Result<()> {
     // Process audio (trim silence, normalize)
     let processor = AudioProcessor::new(config.audio_sample_rate);
@@ -536,25 +543,36 @@ async fn process_segment(
             let text = text.trim();
             if !text.is_empty() {
                 eprintln!("📝 {}", text);
-                let processed_text = process_text(text, &config.text_processing);
-                let processed_text = apply_developer_mode(&processed_text, dictation_mode);
-                if processed_text != text {
-                    eprintln!("🪄 {}", processed_text.trim());
-                }
-
-                if let Some(cmd) = pipe_command {
-                    match command::execute_with_input(cmd, &processed_text).await {
-                        Ok(code) => {
-                            if code != 0 {
-                                eprintln!("⚠️  Pipe command exited with code {}", code);
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("❌ Pipe command failed: {}", e);
-                        }
+                if config.context_editing {
+                    let backend = OutputBackend::new(pipe_command.cloned());
+                    let mut buffer = session_buffer.lock().await;
+                    if let Err(e) =
+                        handle_final_segment(&backend, &mut buffer, config, text, dictation_mode)
+                            .await
+                    {
+                        eprintln!("❌ Context output failed: {}", e);
                     }
                 } else {
-                    println!("{}", processed_text);
+                    let processed_text = process_text(text, &config.text_processing);
+                    let processed_text = apply_developer_mode(&processed_text, dictation_mode);
+                    if processed_text != text {
+                        eprintln!("🪄 {}", processed_text.trim());
+                    }
+
+                    if let Some(cmd) = pipe_command {
+                        match command::execute_with_input(cmd, &processed_text).await {
+                            Ok(code) => {
+                                if code != 0 {
+                                    eprintln!("⚠️  Pipe command exited with code {}", code);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("❌ Pipe command failed: {}", e);
+                            }
+                        }
+                    } else {
+                        println!("{}", processed_text);
+                    }
                 }
 
                 beep_player.play_async(BeepType::Success).await.ok();

@@ -55,7 +55,13 @@ pub struct Config {
     pub default_pipe_to: Option<Vec<String>>,
     /// Saved for shortcut generation / install.sh (not used at runtime except default_pipe_to).
     pub shortcut_key: Option<String>,
+    pub shortcut_key_live: Option<String>,
+    pub shortcut_key_smart: Option<String>,
     pub shortcut_desktop: Option<String>,
+    /// Voice corrections on typed/pasted session text (smart path, VAD segments).
+    pub context_editing: bool,
+    pub context_editing_max_delete_chars: usize,
+    pub context_editing_max_delete_words: usize,
 }
 
 impl Default for Config {
@@ -86,7 +92,12 @@ impl Default for Config {
             profile: DictateProfile::LiveTyping,
             default_pipe_to: None,
             shortcut_key: None,
+            shortcut_key_live: None,
+            shortcut_key_smart: None,
             shortcut_desktop: None,
+            context_editing: true,
+            context_editing_max_delete_chars: 300,
+            context_editing_max_delete_words: 10,
         }
     }
 }
@@ -178,7 +189,18 @@ impl Config {
                     .as_deref(),
             ),
             shortcut_key: std::env::var("SHORTCUT_KEY").ok(),
+            shortcut_key_live: std::env::var("SHORTCUT_KEY_LIVE").ok(),
+            shortcut_key_smart: std::env::var("SHORTCUT_KEY_SMART").ok(),
             shortcut_desktop: std::env::var("SHORTCUT_DESKTOP").ok(),
+            context_editing: env_bool_or("CONTEXT_EDITING", true),
+            context_editing_max_delete_chars: env_parse_or(
+                "CONTEXT_EDITING_MAX_DELETE_CHARS",
+                300usize,
+            ),
+            context_editing_max_delete_words: env_parse_or(
+                "CONTEXT_EDITING_MAX_DELETE_WORDS",
+                10usize,
+            ),
         }
     }
 

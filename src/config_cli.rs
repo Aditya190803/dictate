@@ -488,6 +488,17 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
         println!("  Default output: stdout (set SHORTCUT_OUTPUT in .env or use --pipe-to)");
     }
 
+    let live = config
+        .shortcut_key_live
+        .as_deref()
+        .or(config.shortcut_key.as_deref())
+        .unwrap_or("SUPER,R");
+    let smart = config
+        .shortcut_key_smart
+        .as_deref()
+        .unwrap_or("SUPER,SHIFT,R");
+    println!("✓ Shortcut keys: live={live}, smart={smart}");
+
     for (name, check) in [
         ("wl-copy", "wl-copy --version"),
         ("ydotool", "ydotool --version"),
@@ -524,12 +535,18 @@ fn shortcut_command(mode: &ShortcutMode, profile: &str) -> String {
     ) || profile == "live_typing"
         || profile == "smart_paste";
     let daemon_flag = if daemon { " --daemon" } else { "" };
+    let mode_flag = if profile == "smart_paste" || profile == "smart" {
+        " --mode smart"
+    } else {
+        " --mode live"
+    };
+    let base = format!("dictate{daemon_flag}{mode_flag}");
     match mode {
-        ShortcutMode::Stdout => format!("dictate{daemon_flag}"),
-        ShortcutMode::Clipboard => format!("dictate{daemon_flag} --pipe-to wl-copy"),
-        ShortcutMode::Type => format!("dictate{daemon_flag} --pipe-to ydotool type --file -"),
+        ShortcutMode::Stdout => base,
+        ShortcutMode::Clipboard => format!("{base} --pipe-to wl-copy"),
+        ShortcutMode::Type => format!("{base} --pipe-to ydotool type --file -"),
         ShortcutMode::Paste => {
-            format!("dictate{daemon_flag} --pipe-to sh -c 'wl-copy && ydotool key 29:125'")
+            format!("{base} --pipe-to sh -c 'wl-copy && ydotool key 29:125'")
         }
     }
 }
@@ -543,10 +560,44 @@ fn mode_name(mode: &ShortcutMode) -> &'static str {
     }
 }
 
+fn toggle_shell(cmd: &str) -> String {
+    format!("pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || ({cmd} &)")
+}
+
+/// Print live + smart compositor binds (default setup output).
+pub fn print_dual_shortcuts(desktop: &ShortcutDesktop, live_key: &str, smart_key: &str) {
+    let live_cmd = shortcut_command(&ShortcutMode::Type, "live_typing");
+    let smart_cmd = shortcut_command(&ShortcutMode::Paste, "smart_paste");
+    let live_shell = toggle_shell(&live_cmd);
+    let smart_shell = toggle_shell(&smart_cmd);
+
+    match desktop {
+        ShortcutDesktop::Hyprland => {
+            let lk = live_key.replace(',', ", ");
+            let sk = smart_key.replace(',', ", ");
+            println!("# Live — realtime typing");
+            println!("bind = {lk}, exec, {live_shell}");
+            println!("# Smart — polished paste");
+            println!("bind = {sk}, exec, {smart_shell}");
+        }
+        ShortcutDesktop::Niri => {
+            let lk = live_key.replace(',', "+");
+            let sk = smart_key.replace(',', "+");
+            println!("// Live — realtime");
+            println!("{lk} {{ spawn \"sh\" \"-c\" \"{live_shell}\"; }}");
+            println!("// Smart — polished paste");
+            println!("{sk} {{ spawn \"sh\" \"-c\" \"{smart_shell}\"; }}");
+        }
+        _ => {
+            println!("# Live: {live_shell}");
+            println!("# Smart: {smart_shell}");
+        }
+    }
+}
+
 pub fn print_shortcut(args: &ShortcutArgs) {
     let cmd = shortcut_command(&args.mode, &args.profile);
-    let shell =
-        format!("pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || ({cmd} &)");
+    let shell = toggle_shell(&cmd);
 
     match args.desktop {
         ShortcutDesktop::Hyprland => {

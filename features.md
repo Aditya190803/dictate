@@ -28,6 +28,12 @@ audio → transcription → dictionary → inline fixes → snippets → cleanup
 
 ## Next (recommended order)
 
+### In progress (`feat/dual-mode-context`)
+
+- **Live** shortcut (`--mode live`): realtime Mistral WebSocket, no context edits on deltas.
+- **Smart** shortcut (`--mode smart`): smart paste daemon + LLM polish + `CONTEXT_EDITING` on VAD/stream segments.
+- **`dictate setup`**: yes/no defaults, two bind lines via `print_dual_shortcuts`.
+
 ### A. Context-aware realtime editing (v1.1.0 candidate)
 
 Spoken corrections while live typing: “scratch that”, delete last line/sentence, implicit rewrites (“actually by 11”).

@@ -37,10 +37,6 @@ pub struct WizardOptions {
     #[arg(long)]
     pub profile: Option<String>,
     #[arg(long)]
-    pub transcription_mode: Option<String>,
-    #[arg(long)]
-    pub batch_mode: Option<String>,
-    #[arg(long)]
     pub groq_model: Option<String>,
     #[arg(long)]
     pub whisper_model: Option<String>,
@@ -269,6 +265,7 @@ fn run_config_wizard(path: &PathBuf, options: &WizardOptions) -> Result<()> {
         }
         _ => {
             set_config_value(path, "batch-mode", "false")?;
+            set_config_value(path, "transcription-mode", "auto")?;
         }
     }
 
@@ -277,20 +274,6 @@ fn run_config_wizard(path: &PathBuf, options: &WizardOptions) -> Result<()> {
             let key = option_or_prompt(&options.mistral_api_key, "Mistral API key", None)?;
             if !key.is_empty() {
                 set_config_value(path, "mistral-api-key", &key)?;
-            }
-            if options.transcription_mode.is_some() || options.batch_mode.is_some() {
-                let batch = option_or_prompt(
-                    &options.batch_mode,
-                    "Batch mode (true/false) [advanced]",
-                    Some("false"),
-                )?;
-                set_config_value(path, "batch-mode", &batch)?;
-                let mode = option_or_prompt(
-                    &options.transcription_mode,
-                    "Transcription mode (auto/realtime/batch) [advanced]",
-                    Some("auto"),
-                )?;
-                set_config_value(path, "transcription-mode", &mode)?;
             }
             if options.mistral_model.is_some() {
                 let model = option_or_prompt(

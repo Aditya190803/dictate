@@ -2,6 +2,31 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Two compositor shortcuts: live (realtime) vs smart (polish + context-friendly batch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DictateMode {
+    #[default]
+    Live,
+    Smart,
+}
+
+impl DictateMode {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().replace('-', "_").as_str() {
+            "live" | "live_typing" | "realtime" => Some(Self::Live),
+            "smart" | "smart_paste" | "polish" => Some(Self::Smart),
+            _ => None,
+        }
+    }
+
+    pub fn profile(self) -> DictateProfile {
+        match self {
+            Self::Live => DictateProfile::LiveTyping,
+            Self::Smart => DictateProfile::SmartPaste,
+        }
+    }
+}
+
 /// How dictation should feel for the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

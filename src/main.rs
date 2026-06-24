@@ -23,13 +23,18 @@ mod command;
 mod command_mode;
 mod config;
 mod config_cli;
+mod context_session;
 mod developer_modes;
+mod editing;
+mod intent;
 mod llm_polish;
 mod profile;
 mod setup_tui;
 mod streaming;
 mod text_processing;
+mod transcript;
 mod transcription;
+mod typing;
 mod wav;
 
 #[cfg(test)]
@@ -46,7 +51,6 @@ use config_cli::{print_shortcut, run_config_command, ConfigCommand, ShortcutArgs
 use developer_modes::apply_developer_mode;
 #[cfg(not(test))]
 use llm_polish::{handle_polish_failure, polish_transcript};
-#[cfg(not(test))]
 use profile::DictateProfile;
 #[cfg(not(test))]
 use text_processing::process_text;
@@ -89,6 +93,10 @@ struct Args {
     /// Developer dictation mode
     #[arg(long, default_value = "plain")]
     dictation_mode: String,
+
+    /// Shortcut mode: live (realtime) or smart (polish + context-friendly)
+    #[arg(long, value_parser = ["live", "smart"])]
+    mode: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -728,6 +736,24 @@ async fn main() -> Result<()> {
             );
             std::process::exit(1);
         });
+
+    if let Some(ref m) = args.mode {
+        if let Some(mode) = profile::DictateMode::parse(m) {
+            config.profile = mode.profile();
+        } else {
+            error!("Unknown --mode {m}; use live or smart");
+            std::process::exit(1);
+        }
+    }
+
+    if config.profile == DictateProfile::SmartPaste
+        && !config
+            .transcription_provider
+            .eq_ignore_ascii_case("mistral")
+    {
+        error!("Smart mode requires TRANSCRIPTION_PROVIDER=mistral (LLM polish)");
+        std::process::exit(1);
+    }
 
     // Download model and exit
     if args.download_model {

@@ -571,9 +571,8 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
                     if config.enable_overlay {
                         if let Ok(data) = recorder.get_audio_data() {
                             let tail = data.len().saturating_sub(1600);
-                            overlay.set_level(dictate::overlay_ipc::level_from_samples(
-                                &data[tail..],
-                            ));
+                            overlay
+                                .set_level(dictate::overlay_ipc::level_from_samples(&data[tail..]));
                         }
                     }
                 }

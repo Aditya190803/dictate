@@ -1,25 +1,25 @@
-//! Floating recording pill (winit + softbuffer).
+//! Recording pill on the Wayland overlay layer (gtk4-layer-shell + cairo).
 
 use crate::overlay_ipc::{default_socket_path, OverlayState};
+use gtk4::cairo::{Context, Operator};
+use gtk4::glib;
+use gtk4::prelude::*;
+use gtk4::{Application, ApplicationWindow, DrawingArea};
+use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use serde::Deserialize;
-use softbuffer::{Context, Surface};
 use std::collections::VecDeque;
-
 use std::sync::{Arc, Mutex};
-use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::net::UnixDatagram;
-use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, ControlFlow};
-use winit::window::{Window, WindowAttributes};
 
-const W: u32 = 140;
-const H: u32 = 40;
+const W: i32 = 140;
+const H: i32 = 40;
 const BARS: usize = 16;
+const BAR_W: f64 = 3.0;
+const BAR_GAP: f64 = 3.0;
+const PILL_RADIUS: f64 = 18.0;
 
 struct UiState {
     state: OverlayState,
@@ -37,129 +37,63 @@ impl Default for UiState {
     }
 }
 
-struct PillApp {
-    window: Option<Arc<Window>>,
-    surface: Option<Surface<Arc<Window>, Arc<Window>>>,
-    shared: Arc<Mutex<UiState>>,
+fn visible(state: &UiState) -> bool {
+    !(state.state == OverlayState::Idle && state.last_packet.elapsed() > Duration::from_millis(400))
 }
 
-impl PillApp {
-    fn new(shared: Arc<Mutex<UiState>>) -> Self {
-        Self {
-            window: None,
-            surface: None,
-            shared,
-        }
-    }
-
-    fn paint(&mut self) {
-        let Some(window) = self.window.as_ref() else {
-            return;
-        };
-        let size = window.inner_size();
-        if size.width == 0 || size.height == 0 {
-            return;
-        }
-        let Some(surface) = self.surface.as_mut() else {
-            return;
-        };
-
-        let state = self.shared.lock().ok();
-        let (visible, state, levels) = state.map(|g| {
-            let idle_hide = g.state == OverlayState::Idle
-                && g.last_packet.elapsed() > Duration::from_millis(400);
-            (!idle_hide, g.state, g.levels.clone())
-        }).unwrap_or((false, OverlayState::Idle, VecDeque::new()));
-
-        let w = NonZeroU32::new(size.width).unwrap_or(NonZeroU32::MIN);
-        let h = NonZeroU32::new(size.height).unwrap_or(NonZeroU32::MIN);
-        surface.resize(w, h).ok();
-        let Ok(mut buffer) = surface.buffer_mut() else {
-            return;
-        };
-
-        let w = size.width as usize;
-        let h = size.height as usize;
-        let bg = if visible { 0xE0_1A_1A_1E } else { 0x00_00_00_00 };
-
-        for pixel in buffer.iter_mut() {
-            *pixel = bg;
-        }
-
-        if !visible {
-            let _ = buffer.present();
-            return;
-        }
-
-        let accent = match state {
-            OverlayState::Listening => 0xFF_4A_D9_A5,
-            OverlayState::Processing => 0xFF_F5_A6_23,
-            OverlayState::Idle => 0xFF_6B_72_80,
-        };
-
-        let bar_w = 4;
-        let gap = 3;
-        let total_w = BARS * bar_w + (BARS - 1) * gap;
-        let start_x = (w.saturating_sub(total_w)) / 2;
-        let max_h = h.saturating_sub(12);
-
-        for (i, level) in levels.iter().take(BARS).enumerate() {
-            let bh = ((max_h as f32) * level.clamp(0.08, 1.0)) as usize;
-            let x0 = start_x + i * (bar_w + gap);
-            let y0 = h - 6 - bh;
-            for y in y0..(h - 6).min(h) {
-                for x in x0..(x0 + bar_w).min(w) {
-                    if let Some(p) = buffer.get_mut(y * w + x) {
-                        *p = accent;
-                    }
-                }
-            }
-        }
-
-        let _ = buffer.present();
+fn accent_rgb(state: OverlayState) -> (f64, f64, f64) {
+    match state {
+        OverlayState::Listening => (0.29, 0.85, 0.65),
+        OverlayState::Processing => (0.96, 0.65, 0.14),
+        OverlayState::Idle => (0.42, 0.45, 0.50),
     }
 }
 
-impl ApplicationHandler for PillApp {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
-        }
-        let attrs = WindowAttributes::default()
-            .with_title("dictate")
-            .with_inner_size(LogicalSize::new(W, H))
-            .with_decorations(false)
-            .with_transparent(true)
-            .with_resizable(false);
-        let window = Arc::new(
-            event_loop
-                .create_window(attrs)
-                .expect("create overlay window"),
-        );
-        let ctx = Context::new(window.clone()).expect("softbuffer context");
-        let surface = Surface::new(&ctx, window.clone()).expect("softbuffer surface");
-        self.window = Some(window);
-        self.surface = Some(surface);
+fn round_rect(cr: &Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
+    let degrees = std::f64::consts::PI / 180.0;
+    cr.new_sub_path();
+    cr.arc(x + w - r, y + r, r, -90.0 * degrees, 0.0);
+    cr.arc(x + w - r, y + h - r, r, 0.0, 90.0 * degrees);
+    cr.arc(x + r, y + h - r, r, 90.0 * degrees, 180.0 * degrees);
+    cr.arc(x + r, y + r, r, 180.0 * degrees, 270.0 * degrees);
+    cr.close_path();
+}
+
+fn paint_pill(cr: &Context, width: i32, height: i32, shared: &Arc<Mutex<UiState>>) {
+    let snap = shared
+        .lock()
+        .ok()
+        .map(|g| (visible(&g), g.state, g.levels.clone()))
+        .unwrap_or((false, OverlayState::Idle, VecDeque::new()));
+
+    let (show, state, levels) = snap;
+    if !show {
+        return;
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: winit::window::WindowId,
-        event: WindowEvent,
-    ) {
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::RedrawRequested => self.paint(),
-            _ => {}
-        }
-    }
+    let w = width as f64;
+    let h = height as f64;
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(w) = &self.window {
-            w.request_redraw();
-        }
+    cr.set_operator(Operator::Over);
+    cr.set_source_rgba(0.10, 0.10, 0.12, 0.88);
+    round_rect(cr, 0.0, 0.0, w, h, PILL_RADIUS);
+    cr.fill().ok();
+
+    let (r, g, b) = accent_rgb(state);
+    cr.set_source_rgb(r, g, b);
+
+    let total_w = BARS as f64 * BAR_W + (BARS - 1) as f64 * BAR_GAP;
+    let start_x = (w - total_w) / 2.0;
+    let baseline = h - 8.0;
+    let max_h = h - 16.0;
+
+    for (i, level) in levels.iter().take(BARS).enumerate() {
+        let lv = (*level).clamp(0.08, 1.0) as f64;
+        let bh = max_h * lv;
+        let x = start_x + i as f64 * (BAR_W + BAR_GAP);
+        cr.rectangle(x, baseline - bh, BAR_W, bh);
     }
+    cr.fill().ok();
 }
 
 #[derive(Deserialize)]
@@ -203,49 +137,115 @@ fn apply_packet(shared: &Arc<Mutex<UiState>>, line: &str) {
     }
 }
 
+fn spawn_socket_listener(
+    path: &std::path::Path,
+    shared: Arc<Mutex<UiState>>,
+) -> anyhow::Result<()> {
+    #[cfg(not(unix))]
+    anyhow::bail!("dictate-overlay requires Linux/Unix");
+
+    #[cfg(unix)]
+    {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        let sock = UnixDatagram::bind(path)?;
+        sock.set_nonblocking(true)?;
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 512];
+            loop {
+                match sock.recv(&mut buf) {
+                    Ok(n) => {
+                        if let Ok(line) = std::str::from_utf8(&buf[..n]) {
+                            apply_packet(&shared, line.trim());
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(16));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    Ok(())
+}
+
 pub fn run() -> anyhow::Result<()> {
+    if !gtk4_layer_shell::is_supported() {
+        anyhow::bail!(
+            "Wayland layer-shell is not available (need a Wayland compositor with wlr-layer-shell / layer-shell)"
+        );
+    }
+
     let path = std::env::var("DICTATE_OVERLAY_SOCKET")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| default_socket_path());
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
-
-    #[cfg(not(unix))]
-    anyhow::bail!("dictate-overlay requires Linux/Unix");
 
     let shared = Arc::new(Mutex::new(UiState {
         last_packet: Instant::now(),
         ..Default::default()
     }));
 
-    #[cfg(unix)]
-    {
-        let sock = UnixDatagram::bind(&path)?;
-        sock.set_nonblocking(true)?;
-        let shared_recv = Arc::clone(&shared);
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 512];
-            loop {
-                match sock.recv(&mut buf) {
-                Ok(n) => {
-                    if let Ok(line) = std::str::from_utf8(&buf[..n]) {
-                        apply_packet(&shared_recv, line.trim());
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(16));
-                }
-                Err(_) => break,
-                }
-            }
-        });
-    }
+    spawn_socket_listener(&path, Arc::clone(&shared))?;
 
-    // Bottom-center pill
-    let event_loop = winit::event_loop::EventLoop::new()?;
-    event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = PillApp::new(shared);
-    event_loop.run_app(&mut app)?;
+    let app = Application::builder()
+        .application_id("dev.dictate.overlay")
+        .build();
+
+    let shared_ui = Arc::clone(&shared);
+    app.connect_activate(move |app| {
+        let window = ApplicationWindow::builder()
+            .application(app)
+            .title("dictate")
+            .default_width(W)
+            .default_height(H)
+            .resizable(false)
+            .decorated(false)
+            .build();
+
+        window.init_layer_shell();
+        window.set_layer(Layer::Overlay);
+        window.set_keyboard_mode(KeyboardMode::None);
+        window.set_anchor(Edge::Bottom, true);
+        window.set_margin(Edge::Bottom, 72);
+        window.set_size_request(W, H);
+
+        let css = gtk4::CssProvider::new();
+        css.load_from_data("window { background-color: transparent; }\n");
+        gtk4::style_context_add_provider_for_display(
+            &gtk4::prelude::RootExt::display(&window),
+            &css,
+            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+
+        let area = DrawingArea::new();
+        area.set_content_width(W);
+        area.set_content_height(H);
+        let draw_shared = Arc::clone(&shared_ui);
+        area.set_draw_func(move |_area, cr, width, height| {
+            paint_pill(cr, width, height, &draw_shared);
+        });
+
+        window.set_child(Some(&area));
+
+        let tick_area = area.clone();
+        let tick_shared = Arc::clone(&shared_ui);
+        glib::timeout_add_local(Duration::from_millis(33), move || {
+            let show = tick_shared
+                .lock()
+                .ok()
+                .map(|g| visible(&g))
+                .unwrap_or(false);
+            if show {
+                tick_area.queue_draw();
+            }
+            glib::ControlFlow::Continue
+        });
+
+        window.present();
+    });
+
+    app.run();
     Ok(())
 }

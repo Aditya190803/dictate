@@ -34,7 +34,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev pkg-config \
-            libxkbcommon-dev libwayland-dev libegl1-mesa-dev
+            libgtk-4-dev gtk4-layer-shell
 
       - name: Check formatting
         run: cargo fmt --all -- --check

@@ -2,7 +2,7 @@
 
 ## Status
 
-**Implemented** (feature `overlay`, binary `dictate-overlay`). Off by default (`ENABLE_OVERLAY=false`).
+**Implemented** (feature `overlay`, binary `dictate-overlay`). Off by default (`ENABLE_OVERLAY=false`). Uses **gtk4-layer-shell** (`Layer::Overlay`, bottom anchor, click-through).
 
 ## Goal
 

@@ -57,11 +57,7 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
     let pill = Confirm::new("Show recording pill while dictating? (experimental)")
         .with_default(false)
         .prompt()?;
-    set_config_value(
-        &path,
-        "enable-overlay",
-        if pill { "true" } else { "false" },
-    )?;
+    set_config_value(&path, "enable-overlay", if pill { "true" } else { "false" })?;
 
     println!("\n✓ Saved {}\n", path.display());
     println!("Two shortcuts:");

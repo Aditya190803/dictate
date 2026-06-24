@@ -489,6 +489,8 @@ async fn record_result(
 async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Result<()> {
     info!("Daemon mode — model stays loaded for multiple recordings");
 
+    let overlay = dictate::overlay_ipc::OverlayPublisher::from_env_enabled(config.enable_overlay);
+
     let provider =
         TranscriptionFactory::create_provider(&config.transcription_provider, config).await?;
     let provider: SharedProvider = std::sync::Arc::new(tokio::sync::Mutex::new(provider));
@@ -511,6 +513,7 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
             Ok(Some(SIGUSR1)) => {
                 if !is_recording {
                     info!("Recording started");
+                    overlay.set_state(dictate::overlay_ipc::OverlayState::Listening);
                     beep_player.play_async(BeepType::RecordingStart).await.ok();
                     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
                     if recorder.start_recording().is_err() {
@@ -521,6 +524,7 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
                 } else {
                     info!("Recording stopped, transcribing...");
                     is_recording = false;
+                    overlay.set_state(dictate::overlay_ipc::OverlayState::Processing);
                     recorder.stop_recording().ok();
                     beep_player.play_async(BeepType::RecordingStop).await.ok();
 
@@ -542,6 +546,7 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
                                     .await;
 
                             recorder.clear_buffer().ok();
+                            overlay.set_state(dictate::overlay_ipc::OverlayState::Idle);
                             match result {
                                 Ok(code) => info!("Done (exit code: {code})"),
                                 Err(e) => error!("Processing failed: {e}"),
@@ -563,6 +568,14 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
             Err(_) => {
                 if is_recording {
                     recorder.process_audio_events().ok();
+                    if config.enable_overlay {
+                        if let Ok(data) = recorder.get_audio_data() {
+                            let tail = data.len().saturating_sub(1600);
+                            overlay.set_level(dictate::overlay_ipc::level_from_samples(
+                                &data[tail..],
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -787,6 +800,10 @@ async fn main() -> Result<()> {
 
     // Mode selection driven by DICTATE_PROFILE (see profile.rs)
     let use_realtime = config.use_mistral_realtime_stt() && !args.command_mode;
+
+    if args.daemon && config.enable_overlay {
+        dictate::overlay_ipc::try_spawn_overlay_process();
+    }
 
     if args.daemon && use_realtime {
         let (_control_tx, mut control_rx) = tokio::sync::mpsc::channel(8);

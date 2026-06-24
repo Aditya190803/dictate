@@ -62,6 +62,8 @@ pub struct Config {
     pub context_editing: bool,
     pub context_editing_max_delete_chars: usize,
     pub context_editing_max_delete_words: usize,
+    /// Spawn `dictate-overlay` with daemon; experimental pill UI.
+    pub enable_overlay: bool,
 }
 
 impl Default for Config {
@@ -98,6 +100,7 @@ impl Default for Config {
             context_editing: true,
             context_editing_max_delete_chars: 300,
             context_editing_max_delete_words: 10,
+            enable_overlay: false,
         }
     }
 }
@@ -201,6 +204,7 @@ impl Config {
                 "CONTEXT_EDITING_MAX_DELETE_WORDS",
                 10usize,
             ),
+            enable_overlay: env_bool_or("ENABLE_OVERLAY", false),
         }
     }
 

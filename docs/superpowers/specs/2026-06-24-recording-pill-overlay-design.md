@@ -2,7 +2,7 @@
 
 ## Status
 
-**Planned** — not implemented. Dictate stays CLI-first; overlay is optional and off by default.
+**Implemented** (feature `overlay`, binary `dictate-overlay`). Off by default (`ENABLE_OVERLAY=false`).
 
 ## Goal
 

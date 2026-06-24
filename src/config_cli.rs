@@ -498,6 +498,9 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
         .as_deref()
         .unwrap_or("SUPER,SHIFT,R");
     println!("✓ Shortcut keys: live={live}, smart={smart}");
+    if config.enable_overlay {
+        println!("✓ Recording pill enabled (build dictate-overlay with --features overlay)");
+    }
 
     for (name, check) in [
         ("wl-copy", "wl-copy --version"),

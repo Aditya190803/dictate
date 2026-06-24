@@ -334,12 +334,7 @@ MISTRAL_API_KEY=your_api_key_here
 ```bash
 TRANSCRIPTION_PROVIDER=mistral
 
-# false = realtime by default for Mistral, including keyboard shortcuts
-# true = opt out and use whole-clip batch transcription
-BATCH_MODE=false
-
-# Legacy override: auto, realtime, or batch
-TRANSCRIPTION_MODE=auto
+# Prefer DICTATE_PROFILE (live_typing | smart_paste | batch_clip) over legacy BATCH_MODE / TRANSCRIPTION_MODE.
 
 # Batch/offline transcription model
 MISTRAL_MODEL=voxtral-mini-latest

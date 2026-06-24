@@ -1,4 +1,46 @@
-use anyhow::Result;
+use std::error::Error;
+use std::fmt;
+
+/// Typed failures from validate / trim / pipeline (used for user-facing tips).
+#[derive(Debug, Clone, PartialEq)]
+pub enum AudioProcessingError {
+    EmptyBuffer,
+    TooShort { duration_secs: f32 },
+    NoDetectableSignal,
+    OnlySilence,
+}
+
+impl fmt::Display for AudioProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyBuffer => write!(f, "Audio buffer is empty"),
+            Self::TooShort { duration_secs } => write!(
+                f,
+                "Audio duration too short: {duration_secs:.2}s (minimum {MIN_DURATION_SECONDS}s required)"
+            ),
+            Self::NoDetectableSignal => write!(f, "Audio contains no detectable signal"),
+            Self::OnlySilence => write!(f, "Audio contains only silence"),
+        }
+    }
+}
+
+impl Error for AudioProcessingError {}
+
+impl AudioProcessingError {
+    pub fn user_tip(&self) -> Option<&'static str> {
+        match self {
+            Self::TooShort { .. } => {
+                Some("Tip: Speak for at least 0.1 seconds before sending signal")
+            }
+            Self::OnlySilence | Self::NoDetectableSignal => {
+                Some("Tip: Make sure your microphone is working and you're speaking clearly")
+            }
+            Self::EmptyBuffer => None,
+        }
+    }
+}
+
+pub type Result<T> = std::result::Result<T, AudioProcessingError>;
 
 /// Constants for audio processing.
 const WINDOW_SIZE_MS: u32 = 10;
@@ -72,7 +114,7 @@ impl AudioProcessor {
     /// Trim silence from the start and end of an audio buffer.
     pub fn trim_silence(&self, samples: &[f32]) -> Result<Vec<f32>> {
         if samples.is_empty() {
-            anyhow::bail!("Cannot trim silence from empty audio buffer");
+            return Err(AudioProcessingError::EmptyBuffer);
         }
 
         let threshold = self.calculate_silence_threshold(samples);
@@ -92,7 +134,7 @@ impl AudioProcessor {
             .unwrap_or(samples.len());
 
         if start >= end {
-            anyhow::bail!("Audio contains only silence");
+            return Err(AudioProcessingError::OnlySilence);
         }
 
         Ok(samples[start..end].to_vec())
@@ -113,18 +155,18 @@ impl AudioProcessor {
     /// Validate audio quality and minimum duration.
     pub fn validate_audio(&self, samples: &[f32]) -> Result<()> {
         if samples.is_empty() {
-            anyhow::bail!("Audio buffer is empty");
+            return Err(AudioProcessingError::EmptyBuffer);
         }
 
         let duration = samples.len() as f32 / self.sample_rate as f32;
         if duration < MIN_DURATION_SECONDS {
-            anyhow::bail!(
-                "Audio duration too short: {duration:.2}s (minimum {MIN_DURATION_SECONDS}s required)"
-            );
+            return Err(AudioProcessingError::TooShort {
+                duration_secs: duration,
+            });
         }
 
         if samples.iter().all(|&s| s.abs() < SIGNAL_THRESHOLD) {
-            anyhow::bail!("Audio contains no detectable signal");
+            return Err(AudioProcessingError::NoDetectableSignal);
         }
 
         Ok(())
@@ -313,5 +355,15 @@ mod tests {
     fn test_window_size_samples() {
         assert_eq!(AudioProcessor::new(16000).window_size_samples(), 160);
         assert_eq!(AudioProcessor::new(44100).window_size_samples(), 441);
+    }
+
+    #[test]
+    fn test_audio_processing_error_user_tips() {
+        assert!(AudioProcessingError::TooShort {
+            duration_secs: 0.05
+        }
+        .user_tip()
+        .is_some());
+        assert!(AudioProcessingError::OnlySilence.user_tip().is_some());
     }
 }

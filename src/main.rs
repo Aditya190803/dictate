@@ -19,6 +19,8 @@ use signal_hook_tokio::Signals;
 mod audio;
 mod audio_processing;
 mod beep;
+#[cfg(not(test))]
+mod clip_pipeline;
 mod command;
 mod command_mode;
 mod config;
@@ -43,21 +45,15 @@ mod test_utils;
 #[cfg(not(test))]
 use audio::AudioRecorder;
 #[cfg(not(test))]
-use audio_processing::AudioProcessor;
-#[cfg(not(test))]
 use beep::{BeepConfig, BeepPlayer, BeepType};
+#[cfg(not(test))]
+use clip_pipeline::{
+    process_audio_for_transcription, run_clip_transcription, ClipTranscriptionRequest,
+};
 use config_cli::{print_shortcut, run_config_command, ConfigCommand, ShortcutArgs};
-#[cfg(not(test))]
-use developer_modes::apply_developer_mode;
-#[cfg(not(test))]
-use llm_polish::{handle_polish_failure, polish_transcript};
 use profile::DictateProfile;
 #[cfg(not(test))]
-use text_processing::process_text;
-#[cfg(not(test))]
 use transcription::{SharedProvider, TranscriptionFactory};
-#[cfg(not(test))]
-use wav::WavEncoder;
 
 // ─── CLI argument definitions ────────────────────────────────────────────────
 
@@ -195,187 +191,6 @@ async fn download_model(model: &str) -> Result<PathBuf> {
     tokio::fs::rename(&temp_path, &path).await?;
     info!("Model downloaded to {}", path.display());
     Ok(path)
-}
-
-// ─── Audio transcription pipeline ───────────────────────────────────────────
-
-#[cfg(not(test))]
-async fn finalize_transcribed_text(
-    text: &str,
-    config: &Config,
-    command_mode_enabled: bool,
-    dictation_mode: &str,
-) -> Result<String> {
-    if command_mode_enabled {
-        return command_mode::run_command_mode(text, None, &config.text_processing.command_mode)
-            .await;
-    }
-
-    let local = process_text(text, &config.text_processing);
-    let local = apply_developer_mode(&local, dictation_mode);
-
-    if config.profile != DictateProfile::SmartPaste {
-        return Ok(local);
-    }
-
-    let polish = &config.text_processing.polish;
-    if !polish.effective_enabled(true) {
-        return Ok(local);
-    }
-
-    eprintln!("✨ Polishing…");
-    match polish_transcript(&local, config, polish, dictation_mode).await {
-        Ok(p) => Ok(p),
-        Err(e) => Ok(handle_polish_failure(polish, &local, &e)),
-    }
-}
-
-#[cfg(not(test))]
-async fn process_audio_for_transcription(
-    audio_data: Vec<f32>,
-    sample_rate: u32,
-    config: &Config,
-    pipe_command: Option<&Vec<String>>,
-    command_mode_enabled: bool,
-    dictation_mode: &str,
-) -> Result<i32> {
-    let beep_config = BeepConfig {
-        enabled: config.enable_audio_feedback,
-        volume: config.beep_volume,
-    };
-    let beep_player = BeepPlayer::new(beep_config)?;
-    let processor = AudioProcessor::new(sample_rate);
-
-    let processed_audio = match processor.process_for_speech_recognition(&audio_data) {
-        Ok(p) => p,
-        Err(e) => {
-            error!("Audio processing failed: {e}");
-            beep_player.play_async(BeepType::Error).await.ok();
-            if e.to_string().contains("too short") {
-                eprintln!("Tip: Speak for at least 0.1 seconds before sending signal");
-            } else if e.to_string().contains("only silence")
-                || e.to_string().contains("no detectable signal")
-            {
-                eprintln!("Tip: Make sure your microphone is working and you're speaking clearly");
-            }
-            return Ok(1);
-        }
-    };
-
-    let original_duration = processor.get_duration_seconds(&audio_data);
-    let processed_duration = processor.get_duration_seconds(&processed_audio);
-    debug!(
-        "Audio: {original_duration:.2}s → {processed_duration:.2}s ({} samples)",
-        processed_audio.len()
-    );
-
-    let encoder = WavEncoder::new(sample_rate, 1);
-    let wav_data = match encoder.encode_to_wav(&processed_audio) {
-        Ok(w) => w,
-        Err(e) => {
-            error!("WAV encoding failed: {e}");
-            return Ok(1);
-        }
-    };
-
-    debug!("WAV encoded: {} bytes", wav_data.len());
-
-    let provider =
-        TranscriptionFactory::create_provider(&config.transcription_provider, config).await?;
-    info!("Sending to {} provider...", config.transcription_provider);
-
-    let language = if config.transcription_language == "auto" {
-        None
-    } else {
-        Some(config.transcription_language.clone())
-    };
-
-    match provider.transcribe_with_language(wav_data, language).await {
-        Ok(transcribed_text) => {
-            let text = transcribed_text.trim();
-            if text.is_empty() {
-                warn!("Empty transcription from provider");
-                let code = pipe_and_exit(pipe_command, "").await;
-                beep_player.play_async(BeepType::Success).await.ok();
-                return Ok(code);
-            }
-
-            info!("Transcription: \"{text}\"");
-            let processed_text =
-                match finalize_transcribed_text(text, config, command_mode_enabled, dictation_mode)
-                    .await
-                {
-                    Ok(t) => t,
-                    Err(e) => {
-                        error!("Text processing failed: {e}");
-                        beep_player.play_async(BeepType::Error).await.ok();
-                        return Ok(1);
-                    }
-                };
-
-            if processed_text.is_empty() && config.profile == DictateProfile::SmartPaste {
-                beep_player.play_async(BeepType::Error).await.ok();
-                return Ok(1);
-            }
-
-            let code = pipe_and_exit(pipe_command, &processed_text).await;
-            beep_player.play_async(BeepType::Success).await.ok();
-            Ok(code)
-        }
-        Err(e) => {
-            error!("Transcription failed: {e}");
-            print_transcription_error_hint(&e);
-            beep_player.play_async(BeepType::Error).await.ok();
-            Ok(1)
-        }
-    }
-}
-
-#[cfg(not(test))]
-async fn pipe_and_exit(pipe_command: Option<&Vec<String>>, text: &str) -> i32 {
-    if let Some(cmd) = pipe_command {
-        match command::execute_with_input(cmd, text).await {
-            Ok(code) => code,
-            Err(e) => {
-                error!("Pipe command failed: {e}");
-                1
-            }
-        }
-    } else {
-        println!("{text}");
-        0
-    }
-}
-
-#[cfg(not(test))]
-fn print_transcription_error_hint(e: &transcription::TranscriptionError) {
-    use transcription::TranscriptionError;
-    match e {
-        TranscriptionError::AuthenticationFailed { provider, details } => {
-            if let Some(d) = details {
-                eprintln!("  🔑 Authentication details: {d}");
-            }
-            eprintln!("  💡 Check your {provider} API key");
-        }
-        TranscriptionError::NetworkError(d) => {
-            eprintln!(
-                "  🌐 {}: {} - {}",
-                d.provider, d.error_type, d.error_message
-            );
-        }
-        TranscriptionError::ApiError(d) => {
-            if let Some(s) = d.status_code {
-                eprintln!("  📡 HTTP {s}");
-            }
-            if let Some(c) = &d.error_code {
-                eprintln!("  🏷️  Error code: {c}");
-            }
-        }
-        TranscriptionError::FileTooLarge(size) => {
-            eprintln!("  💡 Audio too large: {size} bytes (max 25MB)");
-        }
-        _ => {}
-    }
 }
 
 // ─── Clip mode (original behavior) ──────────────────────────────────────────
@@ -533,17 +348,19 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
                             let duration = recorder.get_recording_duration_seconds().unwrap_or(0.0);
                             info!("Captured {} samples ({duration:.2}s)", audio_data.len());
 
-                            let ctx = TranscriptionContext {
-                                config,
-                                pipe_command: args.pipe_to,
-                                beep_player: &beep_player,
-                                provider: std::sync::Arc::clone(&provider),
-                                command_mode_enabled: args.base.command_mode,
-                                dictation_mode: &args.base.dictation_mode,
-                            };
-                            let result =
-                                process_with_provider(audio_data, config.audio_sample_rate, ctx)
-                                    .await;
+                            let result = run_clip_transcription(
+                                audio_data,
+                                config.audio_sample_rate,
+                                ClipTranscriptionRequest {
+                                    config,
+                                    pipe_command: args.pipe_to,
+                                    beep_player: &beep_player,
+                                    command_mode_enabled: args.base.command_mode,
+                                    dictation_mode: &args.base.dictation_mode,
+                                    provider: Some(std::sync::Arc::clone(&provider)),
+                                },
+                            )
+                            .await;
 
                             recorder.clear_buffer().ok();
                             overlay.set_state(dictate::overlay_ipc::OverlayState::Idle);
@@ -581,110 +398,6 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
     }
 
     Ok(())
-}
-
-// ─── Process clip with pre-loaded provider ──────────────────────────────────
-
-/// Context passed through the transcription pipeline, bundling config and output
-/// targets to avoid passing 8+ individual arguments.
-#[cfg(not(test))]
-struct TranscriptionContext<'a> {
-    config: &'a Config,
-    pipe_command: Option<&'a Vec<String>>,
-    beep_player: &'a BeepPlayer,
-    provider: SharedProvider,
-    command_mode_enabled: bool,
-    dictation_mode: &'a str,
-}
-
-#[cfg(not(test))]
-async fn process_with_provider(
-    audio_data: Vec<f32>,
-    sample_rate: u32,
-    ctx: TranscriptionContext<'_>,
-) -> Result<i32> {
-    let processor = AudioProcessor::new(sample_rate);
-    let processed = match processor.process_for_speech_recognition(&audio_data) {
-        Ok(p) => p,
-        Err(e) => {
-            error!("Audio processing failed: {e}");
-            ctx.beep_player.play_async(BeepType::Error).await.ok();
-            return Ok(1);
-        }
-    };
-
-    let encoder = WavEncoder::new(sample_rate, 1);
-    let wav_data = match encoder.encode_to_wav(&processed) {
-        Ok(w) => w,
-        Err(e) => {
-            error!("WAV encoding failed: {e}");
-            return Ok(1);
-        }
-    };
-
-    debug!("WAV: {} bytes — transcribing...", wav_data.len());
-
-    let language = if ctx.config.transcription_language == "auto" {
-        None
-    } else {
-        Some(ctx.config.transcription_language.clone())
-    };
-
-    let guard = ctx.provider.lock().await;
-    let result = match guard.transcribe_with_language(wav_data, language).await {
-        Ok(text) => {
-            let text = text.trim();
-            if text.is_empty() {
-                warn!("Empty transcription");
-                0
-            } else {
-                info!("📝 {text}");
-                let processed_text = match finalize_transcribed_text(
-                    text,
-                    ctx.config,
-                    ctx.command_mode_enabled,
-                    ctx.dictation_mode,
-                )
-                .await
-                {
-                    Ok(t) => t,
-                    Err(e) => {
-                        error!("Text processing failed: {e}");
-                        return Ok(1);
-                    }
-                };
-
-                if processed_text.is_empty() && ctx.config.profile == DictateProfile::SmartPaste {
-                    return Ok(1);
-                }
-
-                if let Some(cmd) = ctx.pipe_command {
-                    command::execute_with_input(cmd, &processed_text)
-                        .await
-                        .unwrap_or_else(|e| {
-                            error!("Pipe command failed: {e}");
-                            1
-                        })
-                } else {
-                    println!("{processed_text}");
-                    0
-                }
-            }
-        }
-        Err(e) => {
-            error!("Transcription failed: {e}");
-            1
-        }
-    };
-    drop(guard);
-
-    if result == 0 {
-        ctx.beep_player.play_async(BeepType::Success).await.ok();
-    } else {
-        ctx.beep_player.play_async(BeepType::Error).await.ok();
-    }
-
-    Ok(result)
 }
 
 // ─── Entrypoint ──────────────────────────────────────────────────────────────

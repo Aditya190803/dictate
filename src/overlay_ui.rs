@@ -24,6 +24,7 @@ const PILL_RADIUS: f64 = 18.0;
 struct UiState {
     state: OverlayState,
     levels: VecDeque<f32>,
+    preview: String,
     last_packet: Instant,
 }
 
@@ -32,6 +33,7 @@ impl Default for UiState {
         Self {
             state: OverlayState::Idle,
             levels: VecDeque::new(),
+            preview: String::new(),
             last_packet: Instant::now(),
         }
     }
@@ -63,10 +65,10 @@ fn paint_pill(cr: &Context, width: i32, height: i32, shared: &Arc<Mutex<UiState>
     let snap = shared
         .lock()
         .ok()
-        .map(|g| (visible(&g), g.state, g.levels.clone()))
-        .unwrap_or((false, OverlayState::Idle, VecDeque::new()));
+        .map(|g| (visible(&g), g.state, g.levels.clone(), g.preview.clone()))
+        .unwrap_or((false, OverlayState::Idle, VecDeque::new(), String::new()));
 
-    let (show, state, levels) = snap;
+    let (show, state, levels, preview) = snap;
     if !show {
         return;
     }
@@ -94,6 +96,14 @@ fn paint_pill(cr: &Context, width: i32, height: i32, shared: &Arc<Mutex<UiState>
         cr.rectangle(x, baseline - bh, BAR_W, bh);
     }
     cr.fill().ok();
+
+    if !preview.is_empty() && state == OverlayState::Listening {
+        cr.set_source_rgba(0.85, 0.88, 0.92, 0.95);
+        let _ = cr.select_font_face("Sans", gtk4::cairo::FontSlant::Normal, gtk4::cairo::FontWeight::Normal);
+        cr.set_font_size(9.0);
+        let _ = cr.move_to(8.0, 11.0);
+        let _ = cr.show_text(&preview);
+    }
 }
 
 #[derive(Deserialize)]
@@ -107,10 +117,16 @@ struct InLevel {
 }
 
 #[derive(Deserialize)]
+struct InPreview {
+    t: String,
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum InMsg {
     State(InState),
     Level(InLevel),
+    Preview(InPreview),
 }
 
 fn apply_packet(shared: &Arc<Mutex<UiState>>, line: &str) {
@@ -126,7 +142,11 @@ fn apply_packet(shared: &Arc<Mutex<UiState>>, line: &str) {
             g.state = s.s;
             if s.s == OverlayState::Idle {
                 g.levels.clear();
+                g.preview.clear();
             }
+        }
+        InMsg::Preview(p) => {
+            g.preview = p.t;
         }
         InMsg::Level(l) => {
             g.levels.push_back(l.v.clamp(0.0, 1.0));

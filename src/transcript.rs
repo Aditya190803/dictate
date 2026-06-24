@@ -49,7 +49,6 @@ impl TranscriptBuffer {
         self.segments.clear();
     }
 
-    #[allow(dead_code)]
     pub fn recent_window(&self, max_chars: usize) -> &str {
         if self.text.chars().count() <= max_chars {
             return &self.text;

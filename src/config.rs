@@ -56,6 +56,8 @@ pub struct Config {
     /// Saved for shortcut generation / install.sh (not used at runtime except default_pipe_to).
     pub shortcut_key: Option<String>,
     pub shortcut_key_live: Option<String>,
+    /// Legacy second shortcut; default install uses `shortcut_key` only.
+    #[allow(dead_code)]
     pub shortcut_key_smart: Option<String>,
     pub shortcut_desktop: Option<String>,
     /// Voice corrections on typed/pasted session text (smart path, VAD segments).
@@ -91,7 +93,7 @@ impl Default for Config {
             enable_audio_feedback: true,
             beep_volume: 0.1,
             text_processing: TextProcessingConfig::default(),
-            profile: DictateProfile::LiveTyping,
+            profile: DictateProfile::Segmented,
             default_pipe_to: None,
             shortcut_key: None,
             shortcut_key_live: None,
@@ -208,9 +210,9 @@ impl Config {
         }
     }
 
-    /// Whether Mistral realtime WebSocket STT should be used (live typing profile + mistral).
+    /// Mistral realtime WebSocket STT (default segmented + legacy live typing).
     pub fn use_mistral_realtime_stt(&self) -> bool {
-        self.profile == DictateProfile::LiveTyping
+        matches!(self.profile, DictateProfile::Segmented | DictateProfile::LiveTyping)
             && self.transcription_provider.eq_ignore_ascii_case("mistral")
             && !self.transcription_mode.eq_ignore_ascii_case("batch")
     }

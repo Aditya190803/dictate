@@ -3,12 +3,9 @@ use crate::audio_processing::AudioProcessor;
 use crate::beep::{BeepConfig, BeepPlayer, BeepType};
 use crate::command;
 use crate::config::Config;
-use crate::context_session::handle_final_segment;
-use crate::developer_modes::apply_developer_mode;
-use crate::text_processing::process_text;
+use crate::segment_output::emit_finalized_segment;
 use crate::transcript::TranscriptBuffer;
 use crate::transcription::{SharedProvider, TranscriptionFactory};
-use crate::typing::OutputBackend;
 use crate::wav::WavEncoder;
 use anyhow::{anyhow, Result};
 use base64::Engine;
@@ -157,7 +154,8 @@ pub async fn run_stream(
     dictation_mode: &str,
 ) -> Result<()> {
     if should_use_mistral_realtime(config) {
-        return run_mistral_realtime_stream(config, pipe_command, shutdown_rx).await;
+        return run_mistral_realtime_stream(config, pipe_command, shutdown_rx, dictation_mode)
+            .await;
     }
 
     if config.transcription_mode.eq_ignore_ascii_case("realtime") {
@@ -167,7 +165,7 @@ pub async fn run_stream(
         );
     }
 
-    eprintln!("🎙️  dictate stream mode — speak and text appears as you talk");
+    eprintln!("🎙️  dictate — polished segments after each pause");
     eprintln!("   Press Super+R again or send SIGTERM to stop");
 
     let beep_config = BeepConfig {
@@ -197,16 +195,18 @@ pub async fn run_stream(
     let worker_mode = dictation_mode.to_string();
     let worker_beep = BeepPlayer::new(beep_config.clone())?;
     let session_buffer = Arc::new(Mutex::new(TranscriptBuffer::new()));
+    let worker_overlay = OverlayPublisher::from_env_enabled(worker_config.enable_overlay);
     let worker = tokio::spawn(async move {
         while let Some(segment) = segment_rx.recv().await {
             if let Err(e) = process_segment(
                 segment,
                 &worker_config,
                 Arc::clone(&provider_for_worker),
-                worker_pipe.as_ref(),
+                worker_pipe.clone(),
                 &worker_beep,
                 &worker_mode,
                 Arc::clone(&session_buffer),
+                &worker_overlay,
             )
             .await
             {
@@ -329,22 +329,41 @@ async fn run_mistral_realtime_stream(
     config: &Config,
     pipe_command: Option<&Vec<String>>,
     shutdown_rx: &mut tokio::sync::mpsc::Receiver<()>,
+    dictation_mode: &str,
 ) -> Result<()> {
-    run_mistral_realtime_inner(config, pipe_command, shutdown_rx, true, true).await
+    run_mistral_realtime_inner(
+        config,
+        pipe_command,
+        shutdown_rx,
+        dictation_mode,
+        true,
+        true,
+    )
+    .await
 }
 
 pub async fn run_mistral_realtime_daemon(
     config: &Config,
     pipe_command: Option<&Vec<String>>,
     control_rx: &mut tokio::sync::mpsc::Receiver<()>,
+    dictation_mode: &str,
 ) -> Result<()> {
-    run_mistral_realtime_inner(config, pipe_command, control_rx, false, false).await
+    run_mistral_realtime_inner(
+        config,
+        pipe_command,
+        control_rx,
+        dictation_mode,
+        false,
+        false,
+    )
+    .await
 }
 
 async fn run_mistral_realtime_inner(
     config: &Config,
     pipe_command: Option<&Vec<String>>,
     control_rx: &mut tokio::sync::mpsc::Receiver<()>,
+    dictation_mode: &str,
     active_on_start: bool,
     exit_on_signal: bool,
 ) -> Result<()> {
@@ -353,12 +372,18 @@ async fn run_mistral_realtime_inner(
         .clone()
         .ok_or_else(|| anyhow!("MISTRAL_API_KEY is required for Mistral realtime STT"))?;
 
-    eprintln!("🎙️  dictate realtime mode — Mistral WebSocket STT");
+    let type_deltas = config.profile == crate::profile::DictateProfile::LiveTyping;
+
+    if config.profile.uses_segment_polish() {
+        eprintln!("🎙️  dictate — polished segments (Mistral realtime)");
+    } else {
+        eprintln!("🎙️  dictate realtime mode — Mistral WebSocket STT");
+    }
     eprintln!("   Model: {}", config.mistral_realtime_model);
     if active_on_start {
         eprintln!("   Press the shortcut again, send SIGUSR1, or send SIGTERM to stop");
     } else {
-        eprintln!("   Warm daemon ready; press Super+R/SIGUSR1 to start or stop typing");
+        eprintln!("   Warm daemon ready; press shortcut/SIGUSR1 to start or stop");
     }
 
     let beep_config = BeepConfig {
@@ -417,8 +442,21 @@ async fn run_mistral_realtime_inner(
     } else {
         OverlayState::Idle
     });
+    let session_buffer = Arc::new(Mutex::new(TranscriptBuffer::new()));
+    let pipe_owned = pipe_command.cloned();
+    let dictation_mode = dictation_mode.to_string();
+    let config = config.clone();
+    let mut drain_segments_until: Option<Instant> = None;
+    let mut preview_tail = String::new();
 
     loop {
+        if let Some(until) = drain_segments_until {
+            if Instant::now() >= until {
+                session_buffer.lock().await.clear();
+                drain_segments_until = None;
+            }
+        }
+
         // Poll audio asynchronously when active, otherwise park the future
         let audio_fut = async {
             match audio_rx.as_mut() {
@@ -441,16 +479,27 @@ async fn run_mistral_realtime_inner(
 
                 active = !active;
                 if active {
-                    eprintln!("\n▶️  Realtime typing started");
+                    eprintln!("\n▶️  Dictation started");
+                    drain_segments_until = None;
+                    preview_tail.clear();
+                    overlay.clear_preview();
                     audio_rx = Some(recorder.start_continuous()?);
                     last_audio_time = Instant::now();
                     overlay.set_state(OverlayState::Listening);
                     beep_player.play_async(BeepType::RecordingStart).await.ok();
                 } else {
-                    eprintln!("\n⏹️  Realtime typing stopped");
+                    eprintln!("\n⏹️  Dictation stopped");
                     ws_write.send(Message::Text(serde_json::json!({"type":"input_audio.flush"}).to_string())).await.ok();
                     recorder.stop_recording().ok();
                     audio_rx = None;
+                    if config.profile.uses_segment_polish() {
+                        drain_segments_until =
+                            Some(Instant::now() + Duration::from_millis(900));
+                    } else {
+                        session_buffer.lock().await.clear();
+                    }
+                    overlay.clear_preview();
+                    preview_tail.clear();
                     overlay.set_state(OverlayState::Idle);
                     beep_player.play_async(BeepType::RecordingStop).await.ok();
                 }
@@ -461,12 +510,45 @@ async fn run_mistral_realtime_inner(
                         if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
                             match event.get("type").and_then(|t| t.as_str()) {
                                 Some("transcription.text.delta") => {
-                                    if let Some(delta) = event.get("text").and_then(|t| t.as_str()) {
-                                        emit_text(delta, pipe_command).await;
+                                    if let Some(delta) =
+                                        event.get("text").and_then(|t| t.as_str())
+                                    {
+                                        if type_deltas {
+                                            emit_text(delta, pipe_owned.as_ref()).await;
+                                        } else if config.profile.uses_segment_polish() && active {
+                                            preview_tail.push_str(delta);
+                                            if preview_tail.len() > 240 {
+                                                let drop = preview_tail.len() - 240;
+                                                preview_tail = preview_tail.split_off(drop);
+                                            }
+                                            overlay.set_preview(&preview_tail);
+                                        }
                                     }
                                 }
                                 Some("transcription.segment") => {
-                                    if let Some(segment) = event.get("text").and_then(|t| t.as_str()) {
+                                    if config.profile.uses_segment_polish() {
+                                        if let Some(segment) =
+                                            event.get("text").and_then(|t| t.as_str())
+                                        {
+                                            preview_tail.clear();
+                                            overlay.clear_preview();
+                                            if let Err(e) = emit_finalized_segment(
+                                                &config,
+                                                pipe_owned.clone(),
+                                                &session_buffer,
+                                                segment,
+                                                &dictation_mode,
+                                                &beep_player,
+                                                &overlay,
+                                            )
+                                            .await
+                                            {
+                                                eprintln!("❌ Segment output failed: {e}");
+                                            }
+                                        }
+                                    } else if let Some(segment) =
+                                        event.get("text").and_then(|t| t.as_str())
+                                    {
                                         eprintln!("\n📝 {}", segment.trim());
                                     }
                                 }
@@ -515,10 +597,11 @@ async fn process_segment(
     samples: Vec<f32>,
     config: &Config,
     provider: SharedProvider,
-    pipe_command: Option<&Vec<String>>,
+    pipe_command: Option<Vec<String>>,
     beep_player: &BeepPlayer,
     dictation_mode: &str,
     session_buffer: Arc<Mutex<TranscriptBuffer>>,
+    overlay: &OverlayPublisher,
 ) -> Result<()> {
     // Process audio (trim silence, normalize)
     let processor = AudioProcessor::new(config.audio_sample_rate);
@@ -550,42 +633,18 @@ async fn process_segment(
         .await
     {
         Ok(text) => {
-            let text = text.trim();
-            if !text.is_empty() {
-                eprintln!("📝 {}", text);
-                if config.context_editing {
-                    let backend = OutputBackend::new(pipe_command.cloned());
-                    let mut buffer = session_buffer.lock().await;
-                    if let Err(e) =
-                        handle_final_segment(&backend, &mut buffer, config, text, dictation_mode)
-                            .await
-                    {
-                        eprintln!("❌ Context output failed: {}", e);
-                    }
-                } else {
-                    let processed_text = process_text(text, &config.text_processing);
-                    let processed_text = apply_developer_mode(&processed_text, dictation_mode);
-                    if processed_text != text {
-                        eprintln!("🪄 {}", processed_text.trim());
-                    }
-
-                    if let Some(cmd) = pipe_command {
-                        match command::execute_with_input(cmd, &processed_text).await {
-                            Ok(code) => {
-                                if code != 0 {
-                                    eprintln!("⚠️  Pipe command exited with code {}", code);
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("❌ Pipe command failed: {}", e);
-                            }
-                        }
-                    } else {
-                        println!("{}", processed_text);
-                    }
-                }
-
-                beep_player.play_async(BeepType::Success).await.ok();
+            if let Err(e) = emit_finalized_segment(
+                config,
+                pipe_command,
+                &session_buffer,
+                &text,
+                dictation_mode,
+                beep_player,
+                overlay,
+            )
+            .await
+            {
+                eprintln!("❌ Segment output failed: {e}");
             }
         }
         Err(e) => {

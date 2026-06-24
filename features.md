@@ -2,6 +2,8 @@
 
 Open-source, local-first, CLI-native. Ignore billing, teams, enterprise compliance, and hosted admin from commercial dictation apps.
 
+**Commercial comparison:** [Wispr Flow gap list](docs/wispr-flow-gap.md).
+
 ## Shipped on `main` (v1.0.5+)
 
 | # | Feature | Config / CLI |
@@ -11,15 +13,15 @@ Open-source, local-first, CLI-native. Ignore billing, teams, enterprise complian
 | 3 | **Text cleanup** | `text.toml` → `[cleanup]` |
 | 4 | **Command mode** | `dictate --command` (clipboard + local transforms) |
 | 5 | **Developer dictation modes** | `--dictation-mode` (markdown, git, terminal, code symbols, paths) |
-| — | **Profiles** | `DICTATE_PROFILE`: `live_typing`, `smart_paste`, `batch_clip` |
-| — | **Smart paste polish** | `text.toml` → `[polish]` (Mistral, smart_paste profile) |
+| — | **Default dictation** | `segmented`: pause-bound segments + context + per-segment polish |
+| — | **LLM polish** | `text.toml` → `[polish]` (Mistral chat per segment; legacy whole-clip on `smart_paste`) |
 | — | **Setup & health** | `dictate setup`, `dictate doctor`, `dictate config wizard` |
 
 **Pipeline (implemented):**
 
 ```text
 audio → transcription → dictionary → inline fixes → snippets → cleanup
-  → developer mode → [LLM polish if smart_paste] → stdout / clipboard / type / paste
+  → developer mode → [LLM polish per segment] → type / paste / clipboard / stdout
 ```
 
 **Initial MVP** (snippets, dictionary, order, tests): done in `src/text_processing.rs`.
@@ -28,11 +30,11 @@ audio → transcription → dictionary → inline fixes → snippets → cleanup
 
 ## Next (recommended order)
 
-### In progress (`feat/dual-mode-context`)
+### Shipped (single default path)
 
-- **Live** shortcut (`--mode live`): realtime Mistral WebSocket, no context edits on deltas.
-- **Smart** shortcut (`--mode smart`): smart paste daemon + LLM polish + `CONTEXT_EDITING` on VAD/stream segments.
-- **`dictate setup`**: yes/no defaults, two bind lines via `print_dual_shortcuts`.
+- **`segmented`** profile (default): Mistral realtime segments or VAD + polish + `CONTEXT_EDITING`.
+- **One shortcut** in `dictate setup`.
+- **Legacy**: `DICTATE_PROFILE=live_typing|smart_paste` via env / `--mode`.
 
 ### A. Context-aware realtime editing (v1.1.0 candidate)
 

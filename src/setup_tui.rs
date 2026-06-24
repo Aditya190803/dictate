@@ -1,8 +1,6 @@
 //! Minimal interactive setup (`dictate setup`).
 
-use crate::config_cli::{
-    ensure_config_file, print_dual_shortcuts, set_config_value, ShortcutDesktop,
-};
+use crate::config_cli::{ensure_config_file, print_shortcut, set_config_value, ShortcutArgs};
 use anyhow::Result;
 use inquire::{Confirm, Text};
 use std::path::Path;
@@ -15,7 +13,7 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
 
     let mistral = Confirm::new("Use Mistral for speech-to-text?")
         .with_default(true)
-        .with_help_message("No → Groq. Smart polish mode needs Mistral.")
+        .with_help_message("No → Groq. Polish needs a Mistral key.")
         .prompt()?;
 
     let provider = if mistral { "mistral" } else { "groq" };
@@ -35,15 +33,13 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
         }
     }
 
-    set_config_value(&path, "profile", "live_typing")?;
+    set_config_value(&path, "profile", "segmented")?;
     set_config_value(&path, "batch-mode", "false")?;
     set_config_value(&path, "transcription-mode", "auto")?;
     set_config_value(&path, "language", "auto")?;
     set_config_value(&path, "shortcut-output", "type")?;
     set_config_value(&path, "shortcut-desktop", "hyprland")?;
-    set_config_value(&path, "shortcut-key-live", "SUPER,R")?;
-    set_config_value(&path, "shortcut-key-smart", "SUPER,SHIFT,R")?;
-    set_config_value(&path, "context-editing", "true")?;
+    set_config_value(&path, "shortcut-key", "SUPER,R")?;
 
     let beeps = Confirm::new("Audio feedback beeps?")
         .with_default(true)
@@ -60,11 +56,14 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
     set_config_value(&path, "enable-overlay", if pill { "true" } else { "false" })?;
 
     println!("\n✓ Saved {}\n", path.display());
-    println!("Two shortcuts:");
-    println!("  Live  — realtime typing, no context edits");
-    println!("  Smart — speak, stop, polished paste (daemon)\n");
+    println!("One shortcut: speak in phrases; polished text inserts after each pause.\n");
 
-    print_dual_shortcuts(&ShortcutDesktop::Hyprland, "SUPER,R", "SUPER,SHIFT,R");
+    print_shortcut(&ShortcutArgs {
+        desktop: crate::config_cli::ShortcutDesktop::Hyprland,
+        profile: "segmented".to_string(),
+        mode: crate::config_cli::ShortcutMode::Type,
+        key: "SUPER,R".to_string(),
+    });
 
     println!("\nRun: dictate doctor");
     if pill {

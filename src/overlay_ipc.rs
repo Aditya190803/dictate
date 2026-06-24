@@ -19,6 +19,8 @@ pub enum OverlayState {
 pub enum OverlayMessage {
     State { s: OverlayState },
     Level { v: f32 },
+    /// In-progress STT caption (not inserted into the focused app).
+    Preview { t: String },
 }
 
 /// Default socket under XDG runtime (overlay binds here; dictate sends).
@@ -69,6 +71,15 @@ impl OverlayPublisher {
     pub fn set_level(&self, level: f32) {
         let v = level.clamp(0.0, 1.0);
         self.send(&OverlayMessage::Level { v });
+    }
+
+    pub fn set_preview(&self, text: &str) {
+        let t = text.chars().take(120).collect::<String>();
+        self.send(&OverlayMessage::Preview { t });
+    }
+
+    pub fn clear_preview(&self) {
+        self.send(&OverlayMessage::Preview { t: String::new() });
     }
 
     fn send(&self, msg: &OverlayMessage) {

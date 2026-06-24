@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Two compositor shortcuts: live (realtime) vs smart (polish + context-friendly batch).
+/// Prior typed text included in per-segment LLM polish prompts.
+pub const POLISH_CONTEXT_CHARS: usize = 2000;
+
+/// Legacy CLI `--mode` aliases (default install uses segmented only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DictateMode {
     #[default]
@@ -31,10 +34,12 @@ impl DictateMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DictateProfile {
-    /// Mistral realtime WebSocket: text appears as you speak.
+    /// Default: pause-bound segments, session context, per-segment polish (Mistral realtime or VAD).
     #[default]
+    Segmented,
+    /// Legacy: raw Mistral realtime deltas.
     LiveTyping,
-    /// Record until stop, transcribe whole clip, polish with LLM, paste once (daemon).
+    /// Legacy: record until stop, one polished paste.
     SmartPaste,
     /// Whole-clip batch STT, local text processing only, paste once.
     BatchClip,
@@ -43,6 +48,7 @@ pub enum DictateProfile {
 impl DictateProfile {
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().replace('-', "_").as_str() {
+            "segmented" | "default" | "dictate" => Some(Self::Segmented),
             "live_typing" | "live" | "realtime" | "stream" => Some(Self::LiveTyping),
             "smart_paste" | "smart" | "polish" | "polished" => Some(Self::SmartPaste),
             "batch_clip" | "batch" | "clip" => Some(Self::BatchClip),
@@ -52,6 +58,7 @@ impl DictateProfile {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Segmented => "segmented",
             Self::LiveTyping => "live_typing",
             Self::SmartPaste => "smart_paste",
             Self::BatchClip => "batch_clip",
@@ -60,6 +67,7 @@ impl DictateProfile {
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Segmented => "Dictation",
             Self::LiveTyping => "Live typing",
             Self::SmartPaste => "Smart paste",
             Self::BatchClip => "Batch clip",
@@ -68,6 +76,9 @@ impl DictateProfile {
 
     pub fn description(self) -> &'static str {
         match self {
+            Self::Segmented => {
+                "Speak in phrases; polished text inserts after each pause with voice corrections."
+            }
             Self::LiveTyping => "Words appear as you speak (Mistral realtime).",
             Self::SmartPaste => "Speak, stop, get polished text pasted once (daemon).",
             Self::BatchClip => "Record, stop, transcribe once with local cleanup only.",
@@ -88,7 +99,7 @@ impl DictateProfile {
         if batch_mode || transcription_mode.eq_ignore_ascii_case("batch") {
             Self::BatchClip
         } else {
-            Self::LiveTyping
+            Self::Segmented
         }
     }
 
@@ -98,11 +109,17 @@ impl DictateProfile {
     }
 
     pub fn wants_daemon(self) -> bool {
-        matches!(self, Self::LiveTyping | Self::SmartPaste)
+        matches!(self, Self::Segmented | Self::LiveTyping | Self::SmartPaste)
     }
 
+    /// Whole-clip polish (smart_paste one-shot).
     pub fn uses_llm_polish(self) -> bool {
         matches!(self, Self::SmartPaste)
+    }
+
+    /// Per-utterance polish + session buffer (default product behavior).
+    pub fn uses_segment_polish(self) -> bool {
+        matches!(self, Self::Segmented)
     }
 }
 
@@ -135,8 +152,17 @@ mod tests {
     }
 
     #[test]
-    fn smart_paste_uses_llm_polish() {
+    fn default_profile_is_segmented() {
+        assert_eq!(
+            DictateProfile::from_env_legacy(None, false, "auto"),
+            DictateProfile::Segmented
+        );
+    }
+
+    #[test]
+    fn polish_flags_by_profile() {
         assert!(DictateProfile::SmartPaste.uses_llm_polish());
+        assert!(DictateProfile::Segmented.uses_segment_polish());
         assert!(!DictateProfile::LiveTyping.uses_llm_polish());
     }
 }

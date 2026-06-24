@@ -60,7 +60,7 @@ pub struct ShortcutArgs {
     pub desktop: ShortcutDesktop,
     #[arg(long, value_enum, default_value_t = ShortcutMode::Type)]
     pub mode: ShortcutMode,
-    #[arg(long, default_value = "live_typing")]
+    #[arg(long, default_value = "segmented")]
     pub profile: String,
     #[arg(long, default_value = "SUPER,R")]
     pub key: String,
@@ -130,7 +130,7 @@ pub fn ensure_config_file(path: &PathBuf) -> Result<()> {
     if !path.exists() {
         std::fs::write(
             path,
-            "TRANSCRIPTION_PROVIDER=mistral\nDICTATE_PROFILE=live_typing\n\
+            "TRANSCRIPTION_PROVIDER=mistral\nDICTATE_PROFILE=segmented\n\
              MISTRAL_MODEL=voxtral-mini-latest\n\
              MISTRAL_REALTIME_MODEL=voxtral-mini-transcribe-realtime-2602\n\
              MISTRAL_REALTIME_DELAY_MS=480\n\
@@ -241,8 +241,8 @@ fn run_config_wizard(path: &PathBuf, options: &WizardOptions) -> Result<()> {
 
     let profile = option_or_prompt(
         &options.profile,
-        "Dictation style: live_typing | smart_paste | batch_clip",
-        Some("live_typing"),
+        "Dictation style (Enter = segmented default; legacy: live_typing | smart_paste | batch_clip)",
+        Some("segmented"),
     )?
     .to_lowercase()
     .replace(' ', "_");
@@ -259,7 +259,7 @@ fn run_config_wizard(path: &PathBuf, options: &WizardOptions) -> Result<()> {
             set_config_value(path, "batch-mode", "true")?;
             set_config_value(path, "transcription-mode", "auto")?;
         }
-        "live_typing" => {
+        "live_typing" | "segmented" => {
             set_config_value(path, "batch-mode", "false")?;
             set_config_value(path, "transcription-mode", "auto")?;
         }
@@ -440,7 +440,16 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
         config.profile.description()
     );
     if config.profile.wants_daemon() {
-        println!("  Daemon recommended: dictate --daemon (shortcut snippets include this)");
+        println!("  Run: dictate --daemon (shortcut toggles recording via SIGUSR1)");
+    }
+    if config.profile.uses_segment_polish() {
+        if config.mistral_api_key.as_ref().is_some_and(|k| !k.is_empty()) {
+            println!("✓ Per-segment polish: Mistral chat (default dictation)");
+        } else {
+            println!(
+                "  No MISTRAL_API_KEY — segments use local cleanup only (add key for polish)"
+            );
+        }
     }
     if let Some(key) = &config.shortcut_key {
         println!("  Shortcut key (saved): {key}");
@@ -488,16 +497,12 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
         println!("  Default output: stdout (set SHORTCUT_OUTPUT in .env or use --pipe-to)");
     }
 
-    let live = config
-        .shortcut_key_live
+    let key = config
+        .shortcut_key
         .as_deref()
-        .or(config.shortcut_key.as_deref())
+        .or(config.shortcut_key_live.as_deref())
         .unwrap_or("SUPER,R");
-    let smart = config
-        .shortcut_key_smart
-        .as_deref()
-        .unwrap_or("SUPER,SHIFT,R");
-    println!("✓ Shortcut keys: live={live}, smart={smart}");
+    println!("✓ Shortcut key: {key} (profile: {})", config.profile.as_str());
     if config.enable_overlay {
         println!("✓ Recording pill enabled (build dictate-overlay with --features overlay)");
     }
@@ -534,14 +539,19 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
 fn shortcut_command(mode: &ShortcutMode, profile: &str) -> String {
     let daemon = matches!(
         DictateProfile::parse(profile),
-        Some(DictateProfile::LiveTyping) | Some(DictateProfile::SmartPaste)
-    ) || profile == "live_typing"
+        Some(DictateProfile::Segmented)
+            | Some(DictateProfile::LiveTyping)
+            | Some(DictateProfile::SmartPaste)
+    ) || profile == "segmented"
+        || profile == "live_typing"
         || profile == "smart_paste";
     let daemon_flag = if daemon { " --daemon" } else { "" };
     let mode_flag = if profile == "smart_paste" || profile == "smart" {
         " --mode smart"
-    } else {
+    } else if profile == "live_typing" || profile == "live" {
         " --mode live"
+    } else {
+        ""
     };
     let base = format!("dictate{daemon_flag}{mode_flag}");
     match mode {
@@ -565,37 +575,6 @@ fn mode_name(mode: &ShortcutMode) -> &'static str {
 
 fn toggle_shell(cmd: &str) -> String {
     format!("pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || ({cmd} &)")
-}
-
-/// Print live + smart compositor binds (default setup output).
-pub fn print_dual_shortcuts(desktop: &ShortcutDesktop, live_key: &str, smart_key: &str) {
-    let live_cmd = shortcut_command(&ShortcutMode::Type, "live_typing");
-    let smart_cmd = shortcut_command(&ShortcutMode::Paste, "smart_paste");
-    let live_shell = toggle_shell(&live_cmd);
-    let smart_shell = toggle_shell(&smart_cmd);
-
-    match desktop {
-        ShortcutDesktop::Hyprland => {
-            let lk = live_key.replace(',', ", ");
-            let sk = smart_key.replace(',', ", ");
-            println!("# Live — realtime typing");
-            println!("bind = {lk}, exec, {live_shell}");
-            println!("# Smart — polished paste");
-            println!("bind = {sk}, exec, {smart_shell}");
-        }
-        ShortcutDesktop::Niri => {
-            let lk = live_key.replace(',', "+");
-            let sk = smart_key.replace(',', "+");
-            println!("// Live — realtime");
-            println!("{lk} {{ spawn \"sh\" \"-c\" \"{live_shell}\"; }}");
-            println!("// Smart — polished paste");
-            println!("{sk} {{ spawn \"sh\" \"-c\" \"{smart_shell}\"; }}");
-        }
-        _ => {
-            println!("# Live: {live_shell}");
-            println!("# Smart: {smart_shell}");
-        }
-    }
 }
 
 pub fn print_shortcut(args: &ShortcutArgs) {

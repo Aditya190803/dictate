@@ -31,6 +31,7 @@ mod editing;
 mod intent;
 mod llm_polish;
 mod profile;
+mod segment_output;
 mod setup_tui;
 mod streaming;
 mod text_processing;
@@ -522,7 +523,13 @@ async fn main() -> Result<()> {
         #[cfg(not(test))]
         spawn_signal_forwarder(_control_tx, &[SIGUSR1]);
 
-        streaming::run_mistral_realtime_daemon(&config, pipe_to, &mut control_rx).await?;
+        streaming::run_mistral_realtime_daemon(
+            &config,
+            pipe_to,
+            &mut control_rx,
+            &args.dictation_mode,
+        )
+        .await?;
     } else if args.daemon || config.profile == profile::DictateProfile::SmartPaste {
         #[cfg(not(test))]
         run_daemon_clip_mode(&config, &args_with_pipe).await?;

@@ -17,6 +17,11 @@ Rules:
 - Do not add quotes, preamble, or markdown fences unless the dictation mode is markdown.
 "#;
 
+const SEGMENT_SYSTEM_SUFFIX: &str = r#"
+
+You are polishing ONE segment of ongoing dictation. Prior context was already inserted in the app; output ONLY the polished form of the new segment (not the whole document). Use prior context for terminology and continuity. Fix self-corrections within this segment only.
+"#;
+
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
     choices: Vec<ChatChoice>,
@@ -32,6 +37,39 @@ struct ChatMessage {
     content: String,
 }
 
+pub async fn polish_segment(
+    local_segment: &str,
+    prior_context: &str,
+    config: &Config,
+    polish: &PolishConfig,
+    dictation_mode: &str,
+) -> Result<String> {
+    if local_segment.trim().is_empty() {
+        return Ok(String::new());
+    }
+    let mut system = if polish.system_prompt.trim().is_empty() {
+        DEFAULT_SYSTEM.to_string()
+    } else {
+        polish.system_prompt.clone()
+    };
+    system.push_str(SEGMENT_SYSTEM_SUFFIX);
+
+    let prior = prior_context.trim();
+    let user_body = if prior.is_empty() {
+        format!(
+            "Dictation mode: {dictation_mode}\nLanguage: {}\n\nNew segment (raw STT after local cleanup):\n{local_segment}",
+            config.transcription_language
+        )
+    } else {
+        format!(
+            "Dictation mode: {dictation_mode}\nLanguage: {}\n\nPrior context (already in the app):\n{prior}\n\nNew segment (raw STT after local cleanup):\n{local_segment}",
+            config.transcription_language
+        )
+    };
+
+    run_polish_chat(&user_body, &system, config, polish).await
+}
+
 pub async fn polish_transcript(
     raw_after_local: &str,
     config: &Config,
@@ -41,18 +79,6 @@ pub async fn polish_transcript(
     if !polish.effective_enabled(config.profile.uses_llm_polish()) {
         return Ok(raw_after_local.to_string());
     }
-
-    let api_key = config
-        .mistral_api_key
-        .as_ref()
-        .ok_or_else(|| anyhow!("MISTRAL_API_KEY required for smart paste polish"))?;
-
-    let base = config
-        .mistral_base_url
-        .clone()
-        .unwrap_or_else(|| "https://api.mistral.ai/v1".to_string());
-
-    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
 
     let system = if polish.system_prompt.trim().is_empty() {
         DEFAULT_SYSTEM.to_string()
@@ -64,6 +90,27 @@ pub async fn polish_transcript(
         "Dictation mode: {dictation_mode}\nLanguage: {}\n\nRaw transcript:\n{raw_after_local}",
         config.transcription_language
     );
+
+    run_polish_chat(&user_body, &system, config, polish).await
+}
+
+async fn run_polish_chat(
+    user_body: &str,
+    system: &str,
+    config: &Config,
+    polish: &PolishConfig,
+) -> Result<String> {
+    let api_key = config
+        .mistral_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("MISTRAL_API_KEY required for polish"))?;
+
+    let base = config
+        .mistral_base_url
+        .clone()
+        .unwrap_or_else(|| "https://api.mistral.ai/v1".to_string());
+
+    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(config.transcription_timeout_seconds))

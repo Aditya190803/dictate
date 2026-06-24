@@ -14,7 +14,7 @@ Verify: `dictate --version` (expect **1.1.0+**).
 ## Non-interactive config
 
 ```bash
-dictate config set DICTATE_PROFILE live_typing    # or smart_paste | batch_clip
+# Default profile is segmented (no DICTATE_PROFILE needed). Legacy: live_typing | smart_paste | batch_clip
 dictate config set SHORTCUT_DESKTOP gnome          # match $XDG_CURRENT_DESKTOP
 dictate config set SHORTCUT_OUTPUT type            # type | paste | clipboard | stdout
 dictate config set SHORTCUT_KEY_LIVE 'SUPER,R'
@@ -26,7 +26,7 @@ dictate config set ENABLE_OVERLAY true             # optional pill; needs overla
 ## Shortcuts
 
 ```bash
-dictate shortcuts gnome --profile live_typing --mode type --key SUPER,R
+dictate shortcuts gnome --profile segmented --mode type --key SUPER,R
 dictate doctor
 ```
 
@@ -42,3 +42,4 @@ dictate doctor
 
 - `~/.config/dictate/text.toml` — dictionary, snippets, cleanup, `[polish]` for smart_paste.
 - `dictate config wizard` — full interactive setup when flags are unknown.
+- [`docs/wispr-flow-gap.md`](docs/wispr-flow-gap.md) — Wispr Flow vs dictate.

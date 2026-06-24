@@ -1,6 +1,6 @@
 # dictate - Wayland Speech-to-Text Tool
 
-Press a keybind, speak, and get instant text output. A speech-to-text tool that transcribes audio using Mistral, Groq, or local Whisper and outputs to stdout.
+Press a keybind, speak in phrases, and get **polished text** in your app after each natural pause. Wayland dictation with Mistral (or Groq/local STT), session context, and voice fixes (“scratch that”).
 
 ## Features
 
@@ -10,6 +10,7 @@ Press a keybind, speak, and get instant text output. A speech-to-text tool that 
 - **Audio feedback**: Beeps confirm recording start/stop and success
 - **Wayland native**: Works with modern Linux desktops (Hyprland, Niri, etc.)
 - **Optional local transcription**: Run Whisper locally using whisper-rs
+Not a [Wispr Flow](https://wisprflow.ai/) clone — see [docs/wispr-flow-gap.md](docs/wispr-flow-gap.md) for what commercial Flow has that dictate does not.
 
 ## Requirements
 
@@ -310,17 +311,11 @@ dictate shortcuts niri --mode clipboard --key Mod+Shift+R
 
 dictate supports three transcription providers: **Mistral** (default), **Groq**, and **Local Whisper**.
 
-Choose how dictation behaves with **`DICTATE_PROFILE`** in `~/.config/dictate/.env`:
+**Default dictation** (no profile to pick): `dictate setup` → `dictate --daemon` → one shortcut (`SUPER,R`). While you speak, dictate commits **segments** (after pauses), runs dictionary/snippets/cleanup, optionally **Mistral chat polish** per segment, and types into the focused app. Say **“scratch that”** to fix what was already inserted.
 
-| Profile | Behavior |
-|---------|----------|
-| `live_typing` (default) | Mistral realtime — text appears as you speak (`dictate --daemon`) |
-| `smart_paste` | Record until stop, transcribe, LLM polish, paste once (`dictate --daemon`) |
-| `batch_clip` | Whole-clip batch STT, local cleanup only |
+Run **`dictate setup`** or **`dictate doctor`** to verify. Optional `[polish]` in `text.toml` tweaks the chat model; polish uses the same `MISTRAL_API_KEY` as STT.
 
-Run **`dictate setup`** (guided), **`dictate config wizard`** (scriptable), or **`dictate doctor`** to verify setup. Legacy `BATCH_MODE=true` maps to `batch_clip`.
-
-**Smart paste** (`DICTATE_PROFILE=smart_paste`): add `[polish]` in `text.toml` (optional; enabled by default for that profile). Mistral chat frames corrections, new lines, and lists from your speech.
+**Power users** (legacy env): `DICTATE_PROFILE=live_typing` (raw realtime deltas), `smart_paste` (one paste at end), `batch_clip` (no daemon polish).
 
 ### Mistral (Default)
 
@@ -334,7 +329,7 @@ MISTRAL_API_KEY=your_api_key_here
 ```bash
 TRANSCRIPTION_PROVIDER=mistral
 
-# Prefer DICTATE_PROFILE (live_typing | smart_paste | batch_clip) over legacy BATCH_MODE / TRANSCRIPTION_MODE.
+# Default: segmented dictation (omit DICTATE_PROFILE). Legacy: live_typing | smart_paste | batch_clip.
 
 # Batch/offline transcription model
 MISTRAL_MODEL=voxtral-mini-latest

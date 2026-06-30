@@ -1,4 +1,4 @@
-pub mod overlay_ipc;
+pub mod word_store;
 
-#[cfg(feature = "overlay")]
-pub mod overlay_ui;
+#[cfg(feature = "words-ui")]
+pub mod words_ui;

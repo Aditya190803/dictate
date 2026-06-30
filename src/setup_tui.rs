@@ -1,9 +1,49 @@
 //! Minimal interactive setup (`dictate setup`).
 
-use crate::config_cli::{ensure_config_file, print_shortcut, set_config_value, ShortcutArgs};
+use crate::config::Config;
+use crate::config_cli::{
+    ensure_config_file, install_gnome_shortcuts, print_shortcut, read_config_value,
+    run_autostart_command, run_doctor, set_config_value, AutostartCommand, ShortcutArgs,
+    ShortcutDesktop, ShortcutMode,
+};
 use anyhow::Result;
-use inquire::{Confirm, Text};
+use inquire::{Confirm, Select, Text};
+use std::env;
 use std::path::Path;
+
+fn detect_desktop() -> &'static str {
+    let session = env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    if session != "wayland" && !session.is_empty() {
+        return "other";
+    }
+    let desktop = env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_lowercase();
+    if desktop.contains("gnome") || desktop.contains("unity") {
+        "gnome"
+    } else if desktop.contains("kde") || desktop.contains("plasma") {
+        "kde"
+    } else if desktop.contains("sway") {
+        "sway"
+    } else if desktop.contains("hyprland") {
+        "hyprland"
+    } else if desktop.contains("niri") {
+        "niri"
+    } else {
+        "hyprland"
+    }
+}
+
+fn parse_shortcut_desktop(s: &str) -> ShortcutDesktop {
+    match s.trim().to_lowercase().as_str() {
+        "gnome" => ShortcutDesktop::Gnome,
+        "kde" => ShortcutDesktop::Kde,
+        "sway" => ShortcutDesktop::Sway,
+        "niri" => ShortcutDesktop::Niri,
+        "other" => ShortcutDesktop::Other,
+        _ => ShortcutDesktop::Hyprland,
+    }
+}
 
 pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
     let path = env_path.to_path_buf();
@@ -33,13 +73,57 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
         }
     }
 
-    set_config_value(&path, "profile", "segmented")?;
+    // SUPER,R = live realtime typing; SUPER+SHIFT+R = smart paste (INSTALL.md default).
+    set_config_value(&path, "profile", "live_typing")?;
     set_config_value(&path, "batch-mode", "false")?;
     set_config_value(&path, "transcription-mode", "auto")?;
     set_config_value(&path, "language", "auto")?;
     set_config_value(&path, "shortcut-output", "type")?;
-    set_config_value(&path, "shortcut-desktop", "hyprland")?;
-    set_config_value(&path, "shortcut-key", "SUPER,R")?;
+
+    let live_key = if quick {
+        "SUPER,R".to_string()
+    } else {
+        Text::new("Live typing shortcut (words as you speak)")
+            .with_default("SUPER,R")
+            .with_help_message("Example: SUPER,R or SUPER,SHIFT,R")
+            .prompt()?
+    };
+    let smart_key = if quick {
+        "SUPER,SHIFT,R".to_string()
+    } else {
+        Text::new("Smart paste shortcut (polish when you stop)")
+            .with_default("SUPER,SHIFT,R")
+            .prompt()?
+    };
+    set_config_value(&path, "shortcut-key-live", live_key.trim())?;
+    set_config_value(&path, "shortcut-key-smart", smart_key.trim())?;
+
+    let detected = detect_desktop();
+    let desktop = if quick {
+        detected.to_string()
+    } else {
+        Select::new(
+            "Desktop (for shortcut instructions)",
+            vec![
+                "hyprland".into(),
+                "niri".into(),
+                "gnome".into(),
+                "kde".into(),
+                "sway".into(),
+                "other".into(),
+            ],
+        )
+        .with_starting_cursor(match detected {
+            "gnome" => 2,
+            "kde" => 3,
+            "sway" => 4,
+            "niri" => 1,
+            _ => 0,
+        })
+        .prompt()?
+    };
+    set_config_value(&path, "shortcut-desktop", &desktop)?;
+    set_config_value(&path, "shortcut-key", live_key.trim())?;
 
     let beeps = Confirm::new("Audio feedback beeps?")
         .with_default(true)
@@ -50,26 +134,85 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
         if beeps { "true" } else { "false" },
     )?;
 
-    let pill = Confirm::new("Show recording pill while dictating? (experimental)")
-        .with_default(false)
-        .prompt()?;
-    set_config_value(&path, "enable-overlay", if pill { "true" } else { "false" })?;
+    let desktop_enum = parse_shortcut_desktop(&desktop);
+    let live_key_saved =
+        read_config_value(&path, "SHORTCUT_KEY_LIVE")?.unwrap_or_else(|| "SUPER,R".to_string());
+    let smart_key_saved = read_config_value(&path, "SHORTCUT_KEY_SMART")?
+        .unwrap_or_else(|| "SUPER,SHIFT,R".to_string());
 
     println!("\n✓ Saved {}\n", path.display());
-    println!("One shortcut: speak in phrases; polished text inserts after each pause.\n");
 
-    print_shortcut(&ShortcutArgs {
-        desktop: crate::config_cli::ShortcutDesktop::Hyprland,
-        profile: "segmented".to_string(),
-        mode: crate::config_cli::ShortcutMode::Type,
-        key: "SUPER,R".to_string(),
-    });
+    let mut shortcuts_done = false;
+    if matches!(desktop_enum, ShortcutDesktop::Gnome) {
+        let install = Confirm::new("Install GNOME keyboard shortcuts now?")
+            .with_default(true)
+            .with_help_message(
+                "Same as `dictate shortcuts gnome --install` (dictate toggle live / smart)",
+            )
+            .prompt()?;
+        if install {
+            match install_gnome_shortcuts(env_path) {
+                Ok(()) => shortcuts_done = true,
+                Err(e) => eprintln!("⚠ Could not install GNOME shortcuts: {e}"),
+            }
+        }
+    }
 
-    println!("\nRun: dictate doctor");
-    if pill {
-        println!(
-            "Pill: `cargo build --release --features overlay` — daemon auto-starts dictate-overlay when ENABLE_OVERLAY=true."
+    if !shortcuts_done {
+        println!("Add these shortcuts in your desktop (copy each block):\n");
+        println!("── Live typing — {live_key_saved} ──\n");
+        print_shortcut(
+            &ShortcutArgs {
+                desktop: desktop_enum,
+                profile: "live_typing".to_string(),
+                mode: ShortcutMode::Type,
+                key: live_key_saved.clone(),
+                install: false,
+            },
+            env_path,
         );
+        println!("\n── Smart paste — {smart_key_saved} ──\n");
+        print_shortcut(
+            &ShortcutArgs {
+                desktop: desktop_enum,
+                profile: "smart_paste".to_string(),
+                mode: ShortcutMode::Paste,
+                key: smart_key_saved.clone(),
+                install: false,
+            },
+            env_path,
+        );
+        if matches!(desktop_enum, ShortcutDesktop::Gnome) {
+            println!("\nOr run: dictate shortcuts gnome --install");
+        } else if matches!(desktop_enum, ShortcutDesktop::Kde | ShortcutDesktop::Other) {
+            println!("\nCreate two custom shortcuts in Settings → Keyboard.");
+        }
+    }
+
+    let warm = Confirm::new("Start warm Dictate daemons at login for instant shortcuts?")
+        .with_default(true)
+        .with_help_message("Recommended: removes cold-start delay by keeping live + smart daemons idle until you press a shortcut.")
+        .prompt()?;
+    if warm {
+        if let Err(e) = run_autostart_command(&AutostartCommand::Install) {
+            eprintln!("⚠ Could not install warm daemons: {e}");
+            eprintln!("  You can retry later with: dictate autostart install");
+        }
+    } else {
+        println!("Warm daemons skipped. You can enable later with: dictate autostart install");
+    }
+
+    let run_doc = Confirm::new("Run dictate doctor now?")
+        .with_default(true)
+        .prompt()?;
+    if run_doc {
+        let mut config = Config::load_env_file(env_path).unwrap_or_else(|_| Config::from_env());
+        let text_path = Config::text_config_path_for_env_file(env_path);
+        config.load_text_config_file(&text_path).ok();
+        println!();
+        run_doctor(&config, env_path);
+    } else {
+        println!("\nRun: dictate doctor");
     }
     Ok(())
 }

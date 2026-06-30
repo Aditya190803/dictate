@@ -18,6 +18,10 @@ pub fn detect_intent(text: &str) -> DictationIntent {
         return DictationIntent::ResetContext;
     }
 
+    if normalized == "undo that" || normalized == "undo last" || normalized.contains("undo that") {
+        return DictationIntent::DeleteLastSentence;
+    }
+
     if matches!(
         normalized.as_str(),
         "scratch that" | "forget that" | "remove that" | "delete that"

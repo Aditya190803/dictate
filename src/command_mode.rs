@@ -1,22 +1,58 @@
 #[cfg(not(test))]
 use crate::command;
-#[cfg(not(test))]
-use crate::text_processing::CommandModeConfig;
-use crate::text_processing::{apply_cleanup, CleanupConfig};
+use crate::text_processing::{apply_cleanup, CleanupConfig, CommandModeConfig};
 use anyhow::{anyhow, Result};
 
-#[cfg(not(test))]
 pub async fn run_command_mode(
     instruction: &str,
     source_text: Option<&str>,
     config: &CommandModeConfig,
+    full_config: Option<&crate::config::Config>,
 ) -> Result<String> {
     let source = match source_text {
         Some(text) => text.to_string(),
         None => read_clipboard(config).await?,
     };
 
-    transform_text(instruction, &source)
+    match transform_text(instruction, &source) {
+        Ok(out) => Ok(out),
+        Err(local_err) => {
+            let Some(cfg) = full_config else {
+                return Err(local_err);
+            };
+            if !cfg.command_mode_uses_llm() {
+                return Err(local_err);
+            }
+            crate::llm_polish::transform_with_llm(
+                instruction,
+                &source,
+                cfg,
+                &cfg.text_processing.polish,
+            )
+            .await
+        }
+    }
+}
+
+/// Read clipboard without failing the session (for auto-detect).
+pub async fn peek_clipboard_text(config: &CommandModeConfig) -> Option<String> {
+    #[cfg(test)]
+    {
+        let _ = config;
+        None
+    }
+    #[cfg(not(test))]
+    {
+        read_clipboard(config)
+            .await
+            .ok()
+            .map(|s| s.trim().to_string())
+    }
+}
+
+#[cfg(test)]
+async fn read_clipboard(_config: &CommandModeConfig) -> Result<String> {
+    Err(anyhow!("clipboard unavailable in tests"))
 }
 
 #[cfg(not(test))]

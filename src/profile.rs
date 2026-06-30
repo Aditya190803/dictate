@@ -43,6 +43,8 @@ pub enum DictateProfile {
     SmartPaste,
     /// Whole-clip batch STT, local text processing only, paste once.
     BatchClip,
+    /// Record a voice instruction; transform clipboard text (not free dictation).
+    Command,
 }
 
 impl DictateProfile {
@@ -52,6 +54,7 @@ impl DictateProfile {
             "live_typing" | "live" | "realtime" | "stream" => Some(Self::LiveTyping),
             "smart_paste" | "smart" | "polish" | "polished" => Some(Self::SmartPaste),
             "batch_clip" | "batch" | "clip" => Some(Self::BatchClip),
+            "command" | "command_mode" => Some(Self::Command),
             _ => None,
         }
     }
@@ -62,6 +65,7 @@ impl DictateProfile {
             Self::LiveTyping => "live_typing",
             Self::SmartPaste => "smart_paste",
             Self::BatchClip => "batch_clip",
+            Self::Command => "command",
         }
     }
 
@@ -71,6 +75,7 @@ impl DictateProfile {
             Self::LiveTyping => "Live typing",
             Self::SmartPaste => "Smart paste",
             Self::BatchClip => "Batch clip",
+            Self::Command => "Command",
         }
     }
 
@@ -82,6 +87,7 @@ impl DictateProfile {
             Self::LiveTyping => "Words appear as you speak (Mistral realtime).",
             Self::SmartPaste => "Speak, stop, get polished text pasted once (daemon).",
             Self::BatchClip => "Record, stop, transcribe once with local cleanup only.",
+            Self::Command => "Speak an instruction; applies to clipboard text (e.g. fix grammar).",
         }
     }
 
@@ -105,21 +111,31 @@ impl DictateProfile {
 
     /// Apply profile to legacy STT flags (for code paths that still read batch_mode).
     pub fn implies_batch_stt(self) -> bool {
-        matches!(self, Self::SmartPaste | Self::BatchClip)
+        match self {
+            Self::SmartPaste | Self::BatchClip | Self::Command => true,
+            Self::Segmented | Self::LiveTyping => false,
+        }
     }
 
     pub fn wants_daemon(self) -> bool {
-        matches!(self, Self::Segmented | Self::LiveTyping | Self::SmartPaste)
+        match self {
+            Self::Segmented | Self::LiveTyping | Self::SmartPaste | Self::Command => true,
+            Self::BatchClip => false,
+        }
     }
 
     /// Whole-clip polish (smart_paste one-shot).
     pub fn uses_llm_polish(self) -> bool {
-        matches!(self, Self::SmartPaste)
+        self == Self::SmartPaste
     }
 
     /// Per-utterance polish + session buffer (default product behavior).
     pub fn uses_segment_polish(self) -> bool {
-        matches!(self, Self::Segmented)
+        self == Self::Segmented
+    }
+
+    pub fn is_command_mode(self) -> bool {
+        self == Self::Command
     }
 }
 

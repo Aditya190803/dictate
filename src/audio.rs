@@ -24,8 +24,11 @@ pub struct AudioRecorder {
     stream: Option<Stream>,
     device: Option<Device>,
     chunk_sender: Option<mpsc::Sender<Vec<f32>>>,
+    /// Rate we advertise to consumers (e.g. 16000 for Mistral).
     sample_rate: u32,
     channels: u16,
+    /// Actual CPAL stream rate (may differ if hardware rejects 16 kHz).
+    capture_sample_rate: u32,
     max_buffer_size: usize,
 }
 
@@ -75,8 +78,13 @@ impl AudioRecorder {
             chunk_sender: None,
             sample_rate,
             channels,
+            capture_sample_rate: sample_rate,
             max_buffer_size,
         })
+    }
+
+    pub fn capture_sample_rate(&self) -> u32 {
+        self.capture_sample_rate
     }
 
     /// Audio channel capacity: 100 chunks ≈ 3 seconds of 30ms frames
@@ -95,11 +103,14 @@ impl AudioRecorder {
 
         info!("Using audio device: {}", device.name().unwrap_or_default());
 
-        let config = StreamConfig {
-            channels: self.channels,
-            sample_rate: cpal::SampleRate(self.sample_rate),
-            buffer_size: cpal::BufferSize::Default,
-        };
+        let config = pick_input_stream_config(&device, self.sample_rate, self.channels)?;
+        self.capture_sample_rate = config.sample_rate.0;
+        if self.capture_sample_rate != self.sample_rate {
+            info!(
+                "Mic opened at {} Hz (will resample to {} Hz for STT)",
+                self.capture_sample_rate, self.sample_rate
+            );
+        }
 
         let buffer_clone = Arc::clone(&self.buffer);
         let chunk_sender_clone = self.chunk_sender.clone();
@@ -216,6 +227,42 @@ impl AudioRecorder {
     pub fn process_audio_events(&self) -> Result<()> {
         Ok(())
     }
+}
+
+fn pick_input_stream_config(
+    device: &Device,
+    want_rate: u32,
+    want_channels: u16,
+) -> Result<StreamConfig> {
+    let mut candidates: Vec<StreamConfig> = Vec::new();
+    if let Ok(ranges) = device.supported_input_configs() {
+        for range in ranges {
+            let ch = want_channels.min(range.channels());
+            for &rate in &[want_rate, 48_000, 44_100, 32_000, 16_000, 8_000] {
+                if rate < range.min_sample_rate().0 || rate > range.max_sample_rate().0 {
+                    continue;
+                }
+                let cfg = range.with_sample_rate(cpal::SampleRate(rate)).config();
+                candidates.push(StreamConfig {
+                    channels: ch,
+                    sample_rate: cfg.sample_rate,
+                    buffer_size: cpal::BufferSize::Default,
+                });
+            }
+        }
+    }
+    candidates.sort_by_key(|c| {
+        let dr = (c.sample_rate.0 as i64 - want_rate as i64).unsigned_abs();
+        let dc = (c.channels as u32).saturating_sub(want_channels as u32);
+        dr + u64::from(dc) * 50_000
+    });
+    candidates.into_iter().next().ok_or_else(|| {
+        anyhow::anyhow!(
+            "No supported input config for {} Hz / {} ch",
+            want_rate,
+            want_channels
+        )
+    })
 }
 
 impl Drop for AudioRecorder {

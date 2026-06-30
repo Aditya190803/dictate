@@ -3,6 +3,16 @@ use crate::text_processing::TextProcessingConfig;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
+/// Chat backend for transcript polish (not the STT provider).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolishBackend {
+    Mistral,
+    Ollama,
+}
+
+/// Ctrl+V via ydotool with explicit press/release. Never use `29:125` — that leaves Ctrl+Super stuck down.
+pub const YDOTOOL_PASTE_SHELL: &str = "wl-copy && ydotool key 29:1 47:1 47:0 29:0";
+
 fn parse_pipe_to_env(mode: Option<&str>) -> Option<Vec<String>> {
     match mode?.trim().to_lowercase().as_str() {
         "type" | "typing" => Some(vec![
@@ -15,7 +25,7 @@ fn parse_pipe_to_env(mode: Option<&str>) -> Option<Vec<String>> {
         "paste" | "clipboard_paste" => Some(vec![
             "sh".to_string(),
             "-c".to_string(),
-            "wl-copy && ydotool key 29:125".to_string(),
+            YDOTOOL_PASTE_SHELL.to_string(),
         ]),
         "stdout" | "" => None,
         _ => None,
@@ -64,8 +74,10 @@ pub struct Config {
     pub context_editing: bool,
     pub context_editing_max_delete_chars: usize,
     pub context_editing_max_delete_words: usize,
-    /// Spawn `dictate-overlay` with daemon; experimental pill UI.
-    pub enable_overlay: bool,
+    /// LLM for polish / command-mode fallback: `auto`, `mistral`, or `ollama`.
+    pub polish_provider: String,
+    pub ollama_base_url: String,
+    pub ollama_api_key: Option<String>,
 }
 
 impl Default for Config {
@@ -102,7 +114,9 @@ impl Default for Config {
             context_editing: true,
             context_editing_max_delete_chars: 300,
             context_editing_max_delete_words: 10,
-            enable_overlay: false,
+            polish_provider: "auto".to_string(),
+            ollama_base_url: "http://127.0.0.1:11434".to_string(),
+            ollama_api_key: None,
         }
     }
 }
@@ -206,14 +220,68 @@ impl Config {
                 "CONTEXT_EDITING_MAX_DELETE_WORDS",
                 10usize,
             ),
-            enable_overlay: env_bool_or("ENABLE_OVERLAY", false),
+            polish_provider: env_str_or("POLISH_PROVIDER", "auto"),
+            ollama_base_url: env_str_or("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+            ollama_api_key: std::env::var("OLLAMA_API_KEY").ok(),
         }
+    }
+
+    pub fn save_transcript_history(&self) -> bool {
+        self.text_processing.history.enabled
+    }
+
+    /// Mistral LLM for unrecognized `--command` voice instructions (text.toml).
+    #[cfg_attr(test, allow(dead_code))]
+    pub fn command_mode_uses_llm(&self) -> bool {
+        self.text_processing.command_mode.use_llm && self.polish_available()
+    }
+
+    /// Whether LLM polish / command LLM can run (independent of STT provider).
+    pub fn polish_available(&self) -> bool {
+        self.resolve_polish_backend().is_some()
+    }
+
+    /// `auto`: Mistral if key set, else Ollama. Explicit `mistral` / `ollama` require that backend.
+    pub fn resolve_polish_backend(&self) -> Option<PolishBackend> {
+        let mode = self.polish_provider.trim().to_lowercase();
+        let mistral = self
+            .mistral_api_key
+            .as_ref()
+            .is_some_and(|k| !k.is_empty());
+        match mode.as_str() {
+            "mistral" => {
+                if mistral {
+                    Some(PolishBackend::Mistral)
+                } else {
+                    None
+                }
+            }
+            "ollama" => Some(PolishBackend::Ollama),
+            "auto" | "" => {
+                if mistral {
+                    Some(PolishBackend::Mistral)
+                } else {
+                    Some(PolishBackend::Ollama)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Realtime daemons launched from shortcuts should listen immediately on the first press.
+    pub fn realtime_daemon_active_on_start(&self) -> bool {
+        matches!(
+            self.profile,
+            DictateProfile::Segmented | DictateProfile::LiveTyping
+        ) && self.use_mistral_realtime_stt()
     }
 
     /// Mistral realtime WebSocket STT (default segmented + legacy live typing).
     pub fn use_mistral_realtime_stt(&self) -> bool {
-        matches!(self.profile, DictateProfile::Segmented | DictateProfile::LiveTyping)
-            && self.transcription_provider.eq_ignore_ascii_case("mistral")
+        matches!(
+            self.profile,
+            DictateProfile::Segmented | DictateProfile::LiveTyping
+        ) && self.transcription_provider.eq_ignore_ascii_case("mistral")
             && !self.transcription_mode.eq_ignore_ascii_case("batch")
     }
 
@@ -222,8 +290,51 @@ impl Config {
         cli.or(self.default_pipe_to.as_ref())
     }
 
+    /// Keys dropped from `.env` (features removed); stripped on load.
+    fn is_retired_env_key(key: &str) -> bool {
+        matches!(
+            key.trim().to_uppercase().as_str(),
+            "ENABLE_OVERLAY" | "DICTATE_OVERLAY_SOCKET"
+        )
+    }
+
+    /// Remove obsolete `KEY=value` lines from the config file (in place).
+    pub fn prune_retired_env_keys<P: AsRef<Path>>(path: P) -> Result<bool> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(false);
+        }
+        let contents = std::fs::read_to_string(path)?;
+        let mut kept = Vec::new();
+        let mut removed = false;
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            let drop_line = !trimmed.starts_with('#')
+                && !trimmed.is_empty()
+                && trimmed
+                    .split_once('=')
+                    .is_some_and(|(key, _)| Self::is_retired_env_key(key));
+            if drop_line {
+                removed = true;
+                continue;
+            }
+            kept.push(line);
+        }
+        if !removed {
+            return Ok(false);
+        }
+        let mut out = kept.join("\n");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        std::fs::write(path, out)?;
+        Ok(true)
+    }
+
     /// Load environment file and return config.
     pub fn load_env_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+        let _ = Self::prune_retired_env_keys(path)?;
         dotenvy::from_path(path)?;
         Ok(Self::from_env())
     }
@@ -451,6 +562,21 @@ mod tests {
     }
 
     #[test]
+    fn prune_retired_env_keys_drops_enable_overlay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(
+            &path,
+            "MISTRAL_API_KEY=x\nENABLE_OVERLAY=true\nTRANSCRIPTION_PROVIDER=mistral\n",
+        )
+        .unwrap();
+        assert!(Config::prune_retired_env_keys(&path).unwrap());
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("ENABLE_OVERLAY"));
+        assert!(saved.contains("MISTRAL_API_KEY"));
+    }
+
+    #[test]
     fn test_load_nonexistent_env_file() {
         assert!(Config::load_env_file("/nonexistent/path/.env").is_err());
     }
@@ -486,6 +612,32 @@ mod tests {
             Some("Wispr Flow")
         );
         assert_eq!(config.text_processing.snippets.len(), 1);
+    }
+
+    #[test]
+    fn polish_auto_prefers_mistral_when_key_set() {
+        let config = Config {
+            mistral_api_key: Some("k".to_string()),
+            polish_provider: "auto".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.resolve_polish_backend(),
+            Some(PolishBackend::Mistral)
+        );
+    }
+
+    #[test]
+    fn polish_auto_uses_ollama_without_mistral_key() {
+        let config = Config {
+            mistral_api_key: None,
+            polish_provider: "auto".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.resolve_polish_backend(),
+            Some(PolishBackend::Ollama)
+        );
     }
 
     #[test]

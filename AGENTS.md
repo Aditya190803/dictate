@@ -5,11 +5,11 @@ Follow **INSTALL.md → “For AI Coding Agents”**. This file is the checklist
 ## Install (already on PATH)
 
 ```bash
-cargo build --release --features overlay
-cp target/release/dictate target/release/dictate-overlay ~/.local/bin/
+cargo build --release --features words-ui
+cp target/release/dictate ~/.local/bin/
 ```
 
-Verify: `dictate --version` (expect **1.1.0+**).
+Verify: `dictate --version` (expect **1.1.0-dev** while on dev builds).
 
 ## Non-interactive config
 
@@ -19,24 +19,23 @@ dictate config set SHORTCUT_DESKTOP gnome          # match $XDG_CURRENT_DESKTOP
 dictate config set SHORTCUT_OUTPUT type            # type | paste | clipboard | stdout
 dictate config set SHORTCUT_KEY_LIVE 'SUPER,R'
 dictate config set SHORTCUT_KEY_SMART 'SUPER,SHIFT,R'
-dictate config set ENABLE_OVERLAY true             # optional pill; needs overlay build
 # API keys: dictate config set MISTRAL_API_KEY '...'  (never commit)
 ```
 
 ## Shortcuts
 
 ```bash
-dictate shortcuts gnome --profile segmented --mode type --key SUPER,R
+dictate shortcuts gnome --install   # writes both keys from SHORTCUT_KEY_LIVE / SMART
 dictate doctor
 ```
 
-**GNOME:** Settings → Keyboard → Custom Shortcuts → paste the printed command.  
+**GNOME:** `dictate shortcuts gnome --install` (commands: `dictate toggle live` / `smart`).  
 **Hyprland/Niri:** paste into compositor config (see INSTALL.md).
 
 ## Run
 
-- **Live typing:** `dictate --daemon` (or shortcut that starts daemon + SIGUSR1 toggle).
-- **Overlay:** `ENABLE_OVERLAY=true` in `~/.config/dictate/.env` + daemon spawns `dictate-overlay`.
+- **Live typing:** `dictate --daemon --mode live` (or shortcut that starts daemon + SIGUSR1 toggle).
+- **Dictionary GUI:** `dictate words` (requires `words-ui` build).
 
 ## Optional
 

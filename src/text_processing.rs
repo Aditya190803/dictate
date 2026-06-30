@@ -1,14 +1,14 @@
 use regex::{Captures, Regex, RegexBuilder};
-use serde::Deserialize;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Snippet {
     pub trigger: String,
     pub text: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CleanupConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -28,14 +28,31 @@ pub struct CleanupConfig {
     pub spoken_lists: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct HistoryConfig {
+    #[serde(default = "default_history_enabled")]
+    pub enabled: bool,
+}
+
+fn default_history_enabled() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CommandModeConfig {
     #[serde(default)]
     pub clipboard_command: Vec<String>,
+    /// When local voice commands don't match, use Mistral (needs API key in .env).
+    #[serde(default = "default_command_use_llm")]
+    pub use_llm: bool,
+}
+
+fn default_command_use_llm() -> bool {
+    true
 }
 
 impl CommandModeConfig {
-    #[cfg(not(test))]
+    #[cfg_attr(test, allow(dead_code))]
     pub fn clipboard_command_or_default(&self) -> Vec<String> {
         if self.clipboard_command.is_empty() {
             vec!["wl-paste".to_string(), "--no-newline".to_string()]
@@ -45,8 +62,11 @@ impl CommandModeConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PolishConfig {
+    /// Tone preset: casual, formal, concise, email, bullets (see polish_styles.rs).
+    #[serde(default)]
+    pub style: String,
     #[serde(default = "default_polish_enabled")]
     pub enabled: bool,
     #[serde(default = "default_polish_model")]
@@ -80,6 +100,7 @@ fn default_on_failure() -> String {
 impl Default for PolishConfig {
     fn default() -> Self {
         Self {
+            style: String::new(),
             enabled: default_polish_enabled(),
             model: default_polish_model(),
             temperature: default_polish_temperature(),
@@ -96,10 +117,14 @@ impl PolishConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct TextProcessingConfig {
     #[serde(default)]
     pub dictionary: HashMap<String, String>,
+    /// Words/terms the user cares about. These are applied with conservative
+    /// fuzzy matching for live typing and also passed to polish prompts.
+    #[serde(default)]
+    pub preferred_words: Vec<String>,
     #[serde(default)]
     pub snippets: Vec<Snippet>,
     #[serde(default)]
@@ -108,13 +133,39 @@ pub struct TextProcessingConfig {
     pub command_mode: CommandModeConfig,
     #[serde(default)]
     pub polish: PolishConfig,
+    #[serde(default)]
+    pub history: HistoryConfig,
 }
 
 pub fn process_text(input: &str, config: &TextProcessingConfig) -> String {
     let text = apply_dictionary(input, &config.dictionary);
+    let text = apply_preferred_words(&text, &config.preferred_words);
     let text = apply_inline_corrections(&text);
     let text = apply_snippets(&text, &config.snippets);
     apply_cleanup(&text, &config.cleanup)
+}
+
+pub fn preferred_vocabulary(config: &TextProcessingConfig) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+
+    for term in config
+        .preferred_words
+        .iter()
+        .chain(config.dictionary.values())
+    {
+        let normalized = term.trim();
+        if normalized.is_empty() {
+            continue;
+        }
+        let key = normalized.to_lowercase();
+        if seen.insert(key) {
+            out.push(normalized.to_string());
+        }
+    }
+
+    out.sort_by_key(|s| s.to_lowercase());
+    out
 }
 
 const MAX_REPLACE_ITERATIONS: usize = 64;
@@ -166,6 +217,107 @@ pub fn apply_snippets(input: &str, snippets: &[Snippet]) -> String {
     }
 
     input.to_string()
+}
+
+pub fn apply_preferred_words(input: &str, preferred_words: &[String]) -> String {
+    let terms: Vec<String> = preferred_words
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| s.chars().count() >= 5 && is_single_word_term(s))
+        .map(ToOwned::to_owned)
+        .collect();
+    if terms.is_empty() || input.trim().is_empty() {
+        return input.to_string();
+    }
+
+    let Ok(regex) = Regex::new(r"\p{L}[\p{L}\p{N}_+-]*") else {
+        return input.to_string();
+    };
+
+    let mut output = String::with_capacity(input.len());
+    let mut last = 0;
+    for m in regex.find_iter(input) {
+        output.push_str(&input[last..m.start()]);
+        let token = m.as_str();
+        if let Some(replacement) = preferred_replacement(token, &terms) {
+            output.push_str(replacement);
+        } else {
+            output.push_str(token);
+        }
+        last = m.end();
+    }
+    output.push_str(input.get(last..).unwrap_or_default());
+    output
+}
+
+fn is_single_word_term(term: &str) -> bool {
+    term.chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '+')
+}
+
+fn preferred_replacement<'a>(token: &str, terms: &'a [String]) -> Option<&'a str> {
+    if token.chars().count() < 5 {
+        return None;
+    }
+    let token_lower = token.to_lowercase();
+    let mut best: Option<(&str, usize)> = None;
+
+    for term in terms {
+        let term_lower = term.to_lowercase();
+        if token_lower == term_lower {
+            return if token == term {
+                None
+            } else {
+                Some(term.as_str())
+            };
+        }
+
+        let token_len = token_lower.chars().count();
+        let term_len = term_lower.chars().count();
+        let len_delta = token_len.abs_diff(term_len);
+        let allowed = fuzzy_distance_threshold(term_len.max(token_len));
+        if len_delta > allowed {
+            continue;
+        }
+
+        let distance = levenshtein(&token_lower, &term_lower);
+        if distance <= allowed {
+            match best {
+                Some((_, best_distance)) if best_distance <= distance => {}
+                _ => best = Some((term.as_str(), distance)),
+            }
+        }
+    }
+
+    best.map(|(term, _)| term)
+}
+
+fn fuzzy_distance_threshold(len: usize) -> usize {
+    match len {
+        0..=6 => 1,
+        7..=11 => 2,
+        _ => 3,
+    }
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut costs: Vec<usize> = (0..=b_chars.len()).collect();
+
+    for (i, ca) in a.chars().enumerate() {
+        let mut previous = costs[0];
+        costs[0] = i + 1;
+        for (j, cb) in b_chars.iter().enumerate() {
+            let temp = costs[j + 1];
+            let substitution = previous + usize::from(ca != *cb);
+            let insertion = costs[j] + 1;
+            let deletion = costs[j + 1] + 1;
+            costs[j + 1] = substitution.min(insertion).min(deletion);
+            previous = temp;
+        }
+    }
+
+    *costs.last().unwrap_or(&0)
 }
 
 fn apply_inline_corrections(input: &str) -> String {
@@ -373,7 +525,7 @@ fn ends_with_terminal_punctuation(value: &str) -> bool {
 }
 
 fn is_terminal_punctuation(value: &str) -> bool {
-    matches!(value, "." | "!" | "?" | "," | ":" | ";")
+    value == "." || value == "!" || value == "?" || value == "," || value == ":" || value == ";"
 }
 
 fn apply_spoken_punctuation(input: &str) -> String {
@@ -405,20 +557,23 @@ fn convert_spoken_lists(input: &str) -> String {
         return input.to_string();
     };
 
-    let matches: Vec<_> = marker_regex.find_iter(input).collect();
-    if matches.len() < 2 {
+    let marker_matches: Vec<_> = marker_regex.find_iter(input).collect();
+    if marker_matches.len() < 2 {
         return input.to_string();
     }
 
-    let first_prefix = input[..matches[0].start()].trim();
+    let first_prefix = input
+        .get(..marker_matches[0].start())
+        .unwrap_or_default()
+        .trim();
     if !first_prefix.is_empty() {
         return input.to_string();
     }
 
     let mut items = Vec::new();
-    for (index, matched) in matches.iter().enumerate() {
+    for (index, matched) in marker_matches.iter().enumerate() {
         let item_start = matched.end();
-        let item_end = matches
+        let item_end = marker_matches
             .get(index + 1)
             .map_or_else(|| input.len(), |next| next.start());
         let item = input[item_start..item_end].trim();
@@ -552,6 +707,45 @@ mod tests {
         };
 
         assert_eq!(process_text("sig", &config), "Best,\nAditya");
+    }
+
+    #[test]
+    fn preferred_words_fix_near_matches() {
+        let config = TextProcessingConfig {
+            preferred_words: vec!["Supabase".to_string(), "Hyprland".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            process_text("I use superbase on hyperland.", &config),
+            "I use Supabase on Hyprland."
+        );
+    }
+
+    #[test]
+    fn preferred_words_ignore_short_common_words() {
+        let config = TextProcessingConfig {
+            preferred_words: vec!["Rust".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            process_text("rest of the text", &config),
+            "rest of the text"
+        );
+    }
+
+    #[test]
+    fn preferred_vocabulary_combines_words_and_dictionary_values() {
+        let mut dictionary = HashMap::new();
+        dictionary.insert("super base".to_string(), "Supabase".to_string());
+        let config = TextProcessingConfig {
+            dictionary,
+            preferred_words: vec!["Convex".to_string(), "Supabase".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(preferred_vocabulary(&config), vec!["Convex", "Supabase"]);
     }
 
     #[test]

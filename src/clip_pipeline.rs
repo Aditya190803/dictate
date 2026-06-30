@@ -19,21 +19,35 @@ pub struct ClipTranscriptionRequest<'a> {
     pub config: &'a Config,
     pub pipe_command: Option<&'a Vec<String>>,
     pub beep_player: &'a BeepPlayer,
-    pub command_mode_enabled: bool,
+
     pub dictation_mode: &'a str,
     /// When set (daemon), reuse the loaded provider instead of creating one per clip.
     pub provider: Option<SharedProvider>,
 }
 
+async fn maybe_run_clipboard_command(text: &str, config: &Config) -> Option<Result<String>> {
+    let cm = &config.text_processing.command_mode;
+    let clip = command_mode::peek_clipboard_text(cm)
+        .await
+        .unwrap_or_default();
+    let force = config.profile.is_command_mode();
+    if force
+        || (crate::clipboard_intent::should_apply_clipboard_command(text, &clip)
+            && clip.len() >= 12)
+    {
+        eprintln!("📋 Clipboard command");
+        return Some(command_mode::run_command_mode(text, None, cm, Some(config)).await);
+    }
+    None
+}
+
 pub async fn finalize_transcribed_text(
     text: &str,
     config: &Config,
-    command_mode_enabled: bool,
     dictation_mode: &str,
 ) -> Result<String> {
-    if command_mode_enabled {
-        return command_mode::run_command_mode(text, None, &config.text_processing.command_mode)
-            .await;
+    if let Some(r) = maybe_run_clipboard_command(text, config).await {
+        return r;
     }
 
     let local = process_text(text, &config.text_processing);
@@ -199,26 +213,26 @@ pub async fn run_clip_transcription(
             }
 
             info!("Transcription: \"{text}\"");
-            let processed_text = match finalize_transcribed_text(
-                text,
-                req.config,
-                req.command_mode_enabled,
-                req.dictation_mode,
-            )
-            .await
-            {
-                Ok(t) => t,
-                Err(e) => {
-                    error!("Text processing failed: {e}");
-                    req.beep_player.play_async(BeepType::Error).await.ok();
-                    return Ok(1);
-                }
-            };
+            let processed_text =
+                match finalize_transcribed_text(text, req.config, req.dictation_mode).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        error!("Text processing failed: {e}");
+                        req.beep_player.play_async(BeepType::Error).await.ok();
+                        return Ok(1);
+                    }
+                };
 
             if processed_text.is_empty() && req.config.profile == DictateProfile::SmartPaste {
                 req.beep_player.play_async(BeepType::Error).await.ok();
                 return Ok(1);
             }
+
+            let _ = crate::history::append_transcript(
+                &processed_text,
+                req.config.profile.as_str(),
+                req.config.save_transcript_history(),
+            );
 
             pipe_or_print(req.pipe_command, &processed_text).await
         }
@@ -244,7 +258,6 @@ pub async fn process_audio_for_transcription(
     sample_rate: u32,
     config: &Config,
     pipe_command: Option<&Vec<String>>,
-    command_mode_enabled: bool,
     dictation_mode: &str,
 ) -> Result<i32> {
     let beep_player = BeepPlayer::new(BeepConfig {
@@ -259,7 +272,6 @@ pub async fn process_audio_for_transcription(
             config,
             pipe_command,
             beep_player: &beep_player,
-            command_mode_enabled,
             dictation_mode,
             provider: None,
         },

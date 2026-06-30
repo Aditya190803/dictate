@@ -9,7 +9,6 @@ use crate::transcription::{SharedProvider, TranscriptionFactory};
 use crate::wav::WavEncoder;
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use dictate::overlay_ipc::{level_from_samples, OverlayPublisher, OverlayState};
 use futures::{SinkExt, StreamExt};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -195,7 +194,6 @@ pub async fn run_stream(
     let worker_mode = dictation_mode.to_string();
     let worker_beep = BeepPlayer::new(beep_config.clone())?;
     let session_buffer = Arc::new(Mutex::new(TranscriptBuffer::new()));
-    let worker_overlay = OverlayPublisher::from_env_enabled(worker_config.enable_overlay);
     let worker = tokio::spawn(async move {
         while let Some(segment) = segment_rx.recv().await {
             if let Err(e) = process_segment(
@@ -206,7 +204,6 @@ pub async fn run_stream(
                 &worker_beep,
                 &worker_mode,
                 Arc::clone(&session_buffer),
-                &worker_overlay,
             )
             .await
             {
@@ -241,7 +238,6 @@ pub async fn run_stream(
                 match chunk {
                     Some(chunk) => {
                         last_audio_time = Instant::now();
-
                         if let Some(segment) = segmenter.process_chunk(&chunk) {
                             if segment_tx.try_send(segment).is_err() {
                                 eprintln!("⚠️  Segment queue full; dropping incoming segment");
@@ -276,8 +272,23 @@ pub async fn run_stream(
     Ok(())
 }
 
+fn peak_audio_level(samples: &[f32]) -> f32 {
+    samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max)
+}
+
 fn should_use_mistral_realtime(config: &Config) -> bool {
     config.use_mistral_realtime_stt()
+}
+
+fn realtime_close_hint(
+    frame: &tokio_tungstenite::tungstenite::protocol::CloseFrame<'_>,
+) -> &'static str {
+    let reason = frame.reason.trim();
+    if reason.contains("Upstream connection failed") {
+        " Check MISTRAL_API_KEY, model name (MISTRAL_REALTIME_MODEL), and that your account can use realtime STT. Try `curl https://api.mistral.ai/v1/models` with your key."
+    } else {
+        ""
+    }
 }
 
 fn mistral_realtime_url(config: &Config) -> String {
@@ -298,6 +309,24 @@ fn mistral_realtime_url(config: &Config) -> String {
     )
 }
 
+fn resample_linear(samples: &[f32], from_hz: u32, to_hz: u32) -> Vec<f32> {
+    if from_hz == to_hz || samples.is_empty() {
+        return samples.to_vec();
+    }
+    let out_len = (samples.len() as u64 * to_hz as u64 / from_hz as u64) as usize;
+    let out_len = out_len.max(1);
+    let mut out = Vec::with_capacity(out_len);
+    for i in 0..out_len {
+        let src = i as f64 * from_hz as f64 / to_hz as f64;
+        let idx = src.floor() as usize;
+        let frac = src - idx as f64;
+        let a = samples[idx.min(samples.len() - 1)];
+        let b = samples[(idx + 1).min(samples.len() - 1)];
+        out.push((a as f64 * (1.0 - frac) + b as f64 * frac) as f32);
+    }
+    out
+}
+
 fn f32_samples_to_pcm_s16le(samples: &[f32]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(samples.len() * 2);
     for sample in samples {
@@ -305,6 +334,150 @@ fn f32_samples_to_pcm_s16le(samples: &[f32]) -> Vec<u8> {
         bytes.extend_from_slice(&scaled.to_le_bytes());
     }
     bytes
+}
+
+async fn wait_for_realtime_session(
+    ws_read: &mut futures::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    >,
+) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let msg = tokio::time::timeout(remaining, ws_read.next()).await;
+        match msg {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) else {
+                    continue;
+                };
+                match event.get("type").and_then(|t| t.as_str()) {
+                    Some("session.created") => return Ok(()),
+                    Some("error") => {
+                        return Err(anyhow!("Mistral realtime session error: {text}"));
+                    }
+                    _ => continue,
+                }
+            }
+            Ok(Some(Ok(Message::Close(frame)))) => {
+                let hint = frame.as_ref().map(realtime_close_hint).unwrap_or("");
+                return Err(anyhow!(
+                    "Mistral realtime closed during handshake: {frame:?}.{hint}"
+                ));
+            }
+            Ok(Some(Err(e))) => return Err(e.into()),
+            Ok(None) => return Err(anyhow!("Mistral realtime closed before session.ready")),
+            Ok(Some(Ok(_))) => continue,
+            Err(_) => return Err(anyhow!("Timeout waiting for Mistral realtime session")),
+        }
+    }
+    Err(anyhow!("Timeout waiting for Mistral realtime session"))
+}
+
+async fn wait_for_session_updated(
+    ws_read: &mut futures::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    >,
+) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let msg = tokio::time::timeout(remaining, ws_read.next()).await;
+        match msg {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) else {
+                    continue;
+                };
+                match event.get("type").and_then(|t| t.as_str()) {
+                    Some("session.updated") => return Ok(()),
+                    Some("error") => return Err(anyhow!("Mistral session.update error: {text}")),
+                    _ => continue,
+                }
+            }
+            Ok(Some(Ok(Message::Close(frame)))) => {
+                return Err(anyhow!("Mistral closed before session.updated: {frame:?}"));
+            }
+            Ok(Some(Err(e))) => return Err(e.into()),
+            Ok(None) => return Err(anyhow!("Mistral closed before session.updated")),
+            Ok(Some(Ok(_))) => continue,
+            Err(_) => return Err(anyhow!("Timeout waiting for session.updated")),
+        }
+    }
+    Err(anyhow!("Timeout waiting for session.updated"))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn emit_preview_flush(
+    text: String,
+    config: &Config,
+    pipe_owned: Option<Vec<String>>,
+    session_buffer: Arc<Mutex<TranscriptBuffer>>,
+    dictation_mode: String,
+    beep_player: &BeepPlayer,
+    type_deltas: bool,
+) {
+    if text.trim().is_empty() {
+        return;
+    }
+    if config.profile.uses_segment_polish() {
+        if let Err(e) = emit_finalized_segment(
+            config,
+            pipe_owned,
+            &session_buffer,
+            &text,
+            &dictation_mode,
+            beep_player,
+        )
+        .await
+        {
+            eprintln!("❌ Segment output failed: {e}");
+        }
+    } else if type_deltas {
+        let text = crate::text_processing::process_text(&text, &config.text_processing);
+        emit_text(&text, pipe_owned.as_ref()).await;
+    } else {
+        eprintln!("\n📝 {}", text.trim());
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_realtime_segment(
+    segment: &str,
+    config: &Config,
+    type_deltas: bool,
+    pipe_owned: Option<&Vec<String>>,
+    session_buffer: &Arc<Mutex<TranscriptBuffer>>,
+    dictation_mode: &str,
+    beep_player: &BeepPlayer,
+    preview_tail: &mut String,
+) {
+    let segment = segment.trim();
+    if segment.is_empty() {
+        return;
+    }
+    preview_tail.clear();
+    if config.profile.uses_segment_polish() {
+        if let Err(e) = emit_finalized_segment(
+            config,
+            pipe_owned.cloned(),
+            session_buffer,
+            segment,
+            dictation_mode,
+            beep_player,
+        )
+        .await
+        {
+            eprintln!("❌ Segment output failed: {e}");
+        }
+    } else if type_deltas {
+        let segment = crate::text_processing::process_text(segment, &config.text_processing);
+        emit_text(&segment, pipe_owned).await;
+    } else {
+        eprintln!("\n📝 {segment}");
+    }
 }
 
 async fn emit_text(text: &str, pipe_command: Option<&Vec<String>>) {
@@ -347,13 +520,14 @@ pub async fn run_mistral_realtime_daemon(
     pipe_command: Option<&Vec<String>>,
     control_rx: &mut tokio::sync::mpsc::Receiver<()>,
     dictation_mode: &str,
+    active_on_start: bool,
 ) -> Result<()> {
     run_mistral_realtime_inner(
         config,
         pipe_command,
         control_rx,
         dictation_mode,
-        false,
+        active_on_start,
         false,
     )
     .await
@@ -392,16 +566,30 @@ async fn run_mistral_realtime_inner(
     };
     let beep_player = BeepPlayer::new(beep_config)?;
 
-    let mut request = mistral_realtime_url(config).into_client_request()?;
+    let ws_url = mistral_realtime_url(config);
+    if std::env::var("DICTATE_REALTIME_DEBUG").is_ok() {
+        eprintln!("[realtime] connecting to {ws_url}");
+    }
+
+    let mut request = ws_url.into_client_request()?;
     request.headers_mut().insert(
         "Authorization",
         format!("Bearer {}", api_key)
             .parse()
             .map_err(|e| anyhow!("Invalid auth header: {}", e))?,
     );
+    request.headers_mut().insert(
+        "User-Agent",
+        format!("dictate/{} (Mistral realtime)", env!("CARGO_PKG_VERSION"))
+            .parse()
+            .map_err(|e| anyhow!("Invalid User-Agent: {}", e))?,
+    );
 
     let (ws_stream, _) = connect_async(request).await?;
     let (mut ws_write, mut ws_read) = ws_stream.split();
+
+    // Mistral sends session.created first; do not send session.update before that.
+    wait_for_realtime_session(&mut ws_read).await?;
 
     let session_update = serde_json::json!({
         "type": "session.update",
@@ -409,12 +597,15 @@ async fn run_mistral_realtime_inner(
             "audio_format": {
                 "encoding": "pcm_s16le",
                 "sample_rate": 16000
-            }
+            },
+            "target_streaming_delay_ms": config.mistral_realtime_delay_ms
         }
     });
     ws_write
         .send(Message::Text(session_update.to_string()))
         .await?;
+
+    wait_for_session_updated(&mut ws_read).await?;
 
     if config.audio_sample_rate != 16000 || config.audio_channels != 1 {
         eprintln!(
@@ -436,24 +627,33 @@ async fn run_mistral_realtime_inner(
     let mut active = active_on_start;
     let mut silent_interval = tokio::time::interval(Duration::from_secs(30));
     silent_interval.tick().await;
-    let overlay = OverlayPublisher::from_env_enabled(config.enable_overlay);
-    overlay.set_state(if active_on_start {
-        OverlayState::Listening
-    } else {
-        OverlayState::Idle
-    });
     let session_buffer = Arc::new(Mutex::new(TranscriptBuffer::new()));
     let pipe_owned = pipe_command.cloned();
     let dictation_mode = dictation_mode.to_string();
     let config = config.clone();
-    let mut drain_segments_until: Option<Instant> = None;
     let mut preview_tail = String::new();
+    let mut audio_send_ready = true;
+    let mut drain_flush_until: Option<Instant> = None;
+    let mut first_audio_logged = false;
+    let capture_rate = recorder.capture_sample_rate();
 
     loop {
-        if let Some(until) = drain_segments_until {
+        if let Some(until) = drain_flush_until {
             if Instant::now() >= until {
-                session_buffer.lock().await.clear();
-                drain_segments_until = None;
+                drain_flush_until = None;
+                let text = std::mem::take(&mut preview_tail);
+                if !text.trim().is_empty() {
+                    emit_preview_flush(
+                        text,
+                        &config,
+                        pipe_owned.clone(),
+                        Arc::clone(&session_buffer),
+                        dictation_mode.clone(),
+                        &beep_player,
+                        type_deltas,
+                    )
+                    .await;
+                }
             }
         }
 
@@ -477,31 +677,71 @@ async fn run_mistral_realtime_inner(
                     break;
                 }
 
-                active = !active;
-                if active {
+                if !active_on_start && audio_rx.is_none() {
+                    if drain_flush_until.take().is_some() {
+                        let pending = std::mem::take(&mut preview_tail);
+                        if !pending.trim().is_empty() {
+                            emit_preview_flush(
+                                pending,
+                                &config,
+                                pipe_owned.clone(),
+                                Arc::clone(&session_buffer),
+                                dictation_mode.clone(),
+                                &beep_player,
+                                type_deltas,
+                            )
+                            .await;
+                        }
+                    } else {
+                        preview_tail.clear();
+                    }
+                    session_buffer.lock().await.clear();
                     eprintln!("\n▶️  Dictation started");
-                    drain_segments_until = None;
-                    preview_tail.clear();
-                    overlay.clear_preview();
                     audio_rx = Some(recorder.start_continuous()?);
                     last_audio_time = Instant::now();
-                    overlay.set_state(OverlayState::Listening);
+                    active = true;
+                    audio_send_ready = true;
+                    beep_player.play_async(BeepType::RecordingStart).await.ok();
+                    continue;
+                }
+
+                active = !active;
+                if active {
+                    if drain_flush_until.take().is_some() {
+                        let pending = std::mem::take(&mut preview_tail);
+                        if !pending.trim().is_empty() {
+                            emit_preview_flush(
+                                pending,
+                                &config,
+                                pipe_owned.clone(),
+                                Arc::clone(&session_buffer),
+                                dictation_mode.clone(),
+                                &beep_player,
+                                type_deltas,
+                            )
+                            .await;
+                        }
+                    } else {
+                        preview_tail.clear();
+                    }
+                    session_buffer.lock().await.clear();
+                    eprintln!("\n▶️  Dictation started");
+                    audio_rx = Some(recorder.start_continuous()?);
+                    last_audio_time = Instant::now();
                     beep_player.play_async(BeepType::RecordingStart).await.ok();
                 } else {
                     eprintln!("\n⏹️  Dictation stopped");
-                    ws_write.send(Message::Text(serde_json::json!({"type":"input_audio.flush"}).to_string())).await.ok();
                     recorder.stop_recording().ok();
                     audio_rx = None;
-                    if config.profile.uses_segment_polish() {
-                        drain_segments_until =
-                            Some(Instant::now() + Duration::from_millis(900));
-                    } else {
-                        session_buffer.lock().await.clear();
-                    }
-                    overlay.clear_preview();
-                    preview_tail.clear();
-                    overlay.set_state(OverlayState::Idle);
                     beep_player.play_async(BeepType::RecordingStop).await.ok();
+                    ws_write
+                        .send(Message::Text(
+                            serde_json::json!({"type":"input_audio.flush"}).to_string(),
+                        ))
+                        .await
+                        .ok();
+                    drain_flush_until =
+                        Some(Instant::now() + Duration::from_millis(3500));
                 }
             }
             maybe_msg = ws_read.next() => {
@@ -514,49 +754,84 @@ async fn run_mistral_realtime_inner(
                                         event.get("text").and_then(|t| t.as_str())
                                     {
                                         if type_deltas {
-                                            emit_text(delta, pipe_owned.as_ref()).await;
-                                        } else if config.profile.uses_segment_polish() && active {
+                                            let delta = crate::text_processing::process_text(
+                                                delta,
+                                                &config.text_processing,
+                                            );
+                                            emit_text(&delta, pipe_owned.as_ref()).await;
+                                        } else if config.profile.uses_segment_polish() {
                                             preview_tail.push_str(delta);
-                                            if preview_tail.len() > 240 {
-                                                let drop = preview_tail.len() - 240;
-                                                preview_tail = preview_tail.split_off(drop);
-                                            }
-                                            overlay.set_preview(&preview_tail);
                                         }
                                     }
                                 }
                                 Some("transcription.segment") => {
-                                    if config.profile.uses_segment_polish() {
-                                        if let Some(segment) =
-                                            event.get("text").and_then(|t| t.as_str())
-                                        {
-                                            preview_tail.clear();
-                                            overlay.clear_preview();
+                                    // Live typing already emitted via text.delta; segment is duplicate.
+                                    if type_deltas {
+                                        preview_tail.clear();
+                                        continue;
+                                    }
+                                    if let Some(segment) =
+                                        event.get("text").and_then(|t| t.as_str())
+                                    {
+                                        handle_realtime_segment(
+                                            segment,
+                                            &config,
+                                            type_deltas,
+                                            pipe_owned.as_ref(),
+                                            &session_buffer,
+                                            &dictation_mode,
+                                            &beep_player,
+                                            &mut preview_tail,
+                                        )
+                                        .await;
+                                    }
+                                }
+                                Some("transcription.done") => {
+                                    if !preview_tail.trim().is_empty() {
+                                        let tail = std::mem::take(&mut preview_tail);
+                                        if config.profile.uses_segment_polish() {
                                             if let Err(e) = emit_finalized_segment(
                                                 &config,
                                                 pipe_owned.clone(),
                                                 &session_buffer,
-                                                segment,
+                                                &tail,
                                                 &dictation_mode,
                                                 &beep_player,
-                                                &overlay,
                                             )
                                             .await
                                             {
                                                 eprintln!("❌ Segment output failed: {e}");
                                             }
+                                        } else if type_deltas {
+                                            let tail = crate::text_processing::process_text(
+                                                &tail,
+                                                &config.text_processing,
+                                            );
+                                            emit_text(&tail, pipe_owned.as_ref()).await;
+                                        } else {
+                                            eprintln!("\n📝 {}", tail.trim());
                                         }
-                                    } else if let Some(segment) =
-                                        event.get("text").and_then(|t| t.as_str())
-                                    {
-                                        eprintln!("\n📝 {}", segment.trim());
                                     }
                                 }
+                                Some("session.created") | Some("session.updated") => {}
                                 Some("error") => {
                                     eprintln!("❌ Mistral realtime error: {}", event);
                                     beep_player.play_async(BeepType::Error).await.ok();
+                                    audio_send_ready = false;
                                 }
-                                _ => {}
+                                Some(other)
+                                    if std::env::var("DICTATE_REALTIME_DEBUG").is_ok()
+                                        || matches!(
+                                            other,
+                                            "transcription.language"
+                                                | "input_audio_buffer.speech_started"
+                                                | "input_audio_buffer.speech_stopped"
+                                        ) =>
+                                {
+                                    eprintln!("[realtime] {other}: {text}");
+                                }
+                                Some(_) => {}
+                                None => {}
                             }
                         }
                     }
@@ -568,12 +843,29 @@ async fn run_mistral_realtime_inner(
             chunk = audio_fut => {
                 if let Some(chunk) = chunk {
                     last_audio_time = Instant::now();
-                    if active {
-                        overlay.set_level(level_from_samples(&chunk));
+                    if active && audio_send_ready {
+                        let chunk = if capture_rate != 16_000 {
+                            resample_linear(&chunk, capture_rate, 16_000)
+                        } else {
+                            chunk
+                        };
+                        if !first_audio_logged {
+                            first_audio_logged = true;
+                            let lvl = peak_audio_level(&chunk);
+                            eprintln!(
+                                "🎤 Audio streaming to Mistral (capture {} Hz → 16 kHz, level {:.2})",
+                                capture_rate,
+                                lvl
+                            );
+                        }
                         let pcm = f32_samples_to_pcm_s16le(&chunk);
                         let encoded = base64::engine::general_purpose::STANDARD.encode(pcm);
                         let msg = serde_json::json!({"type":"input_audio.append", "audio": encoded});
-                        ws_write.send(Message::Text(msg.to_string())).await?;
+                        if let Err(e) = ws_write.send(Message::Text(msg.to_string())).await {
+                            eprintln!("❌ Mistral realtime send failed: {e}");
+                            audio_send_ready = false;
+                            beep_player.play_async(BeepType::Error).await.ok();
+                        }
                     }
                 } else {
                     // Channel closed
@@ -593,6 +885,7 @@ async fn run_mistral_realtime_inner(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_segment(
     samples: Vec<f32>,
     config: &Config,
@@ -601,7 +894,6 @@ async fn process_segment(
     beep_player: &BeepPlayer,
     dictation_mode: &str,
     session_buffer: Arc<Mutex<TranscriptBuffer>>,
-    overlay: &OverlayPublisher,
 ) -> Result<()> {
     // Process audio (trim silence, normalize)
     let processor = AudioProcessor::new(config.audio_sample_rate);
@@ -640,7 +932,6 @@ async fn process_segment(
                 &text,
                 dictation_mode,
                 beep_player,
-                overlay,
             )
             .await
             {

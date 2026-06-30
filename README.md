@@ -1,493 +1,113 @@
-# dictate - Wayland Speech-to-Text Tool
+# dictate
 
-Press a keybind, speak in phrases, and get **polished text** in your app after each natural pause. Wayland dictation with Mistral (or Groq/local STT), session context, and voice fixes (“scratch that”).
+Wayland speech-to-text for Linux: global shortcuts, daemon-friendly, stdout-first. Speak in phrases and get **polished text** in the focused app (default **segmented** profile), or use **live typing** / **smart paste** on a second key.
 
-## Features
+Not [Wispr Flow](https://wisprflow.ai/) — see [docs/wispr-flow-gap.md](docs/wispr-flow-gap.md).
 
-- **Signal-driven**: Press keybind → speak → get text (no GUI needed)
-- **UNIX philosophy**: Outputs transcribed text to stdout for piping to other tools
-- **On-demand operation**: Starts when called, processes audio, then exits
-- **Audio feedback**: Beeps confirm recording start/stop and success
-- **Wayland native**: Works with modern Linux desktops (Hyprland, Niri, etc.)
-- **Optional local transcription**: Run Whisper locally using whisper-rs
-Not a [Wispr Flow](https://wisprflow.ai/) clone — see [docs/wispr-flow-gap.md](docs/wispr-flow-gap.md) for what commercial Flow has that dictate does not.
-
-## Requirements
-
-- **Wayland desktop** (Hyprland, Niri, GNOME, KDE, etc.)
-- **Mistral or Groq API key** (for online transcription)
-- **System packages**:
-
-```bash
-# Arch Linux
-sudo pacman -S pipewire
-
-# Ubuntu/Debian  
-sudo apt install pipewire-pulse
-
-# Fedora
-sudo dnf install pipewire-pulseaudio
-```
-
-**Optional (for direct typing keybindings):**
-```bash
-# Arch Linux
-sudo pacman -S ydotool
-
-# Ubuntu/Debian  
-sudo apt install ydotool
-
-# Fedora
-sudo dnf install ydotool
-
-# Setup ydotool permissions and service:
-sudo usermod -a -G input $USER
-
-# Enable and start ydotool daemon service
-sudo systemctl enable --now ydotool.service
-
-# Set socket environment variable (add to ~/.bashrc or ~/.zshrc)
-echo 'export YDOTOOL_SOCKET=/tmp/.ydotool_socket' >> ~/.bashrc
-
-# Log out and back in (or source ~/.bashrc)
-```
-
-## Installation
-
-### One-command installer
+## Install
 
 ```bash
 curl -fsSL https://dictate.adityamer.dev/install.sh | sh
+dictate setup
+dictate doctor
 ```
 
-The installer detects common Linux package managers, installs/checks system dependencies, downloads the latest release binary when available, falls back to building from source, writes `~/.config/dictate/.env`, and prints shortcut snippets. See [`INSTALL.md`](INSTALL.md) for manual steps and a coding-agent prompt.
-
-### From AUR (Arch Linux)
+Manual build, dependencies, and compositor shortcuts: **[INSTALL.md](INSTALL.md)**.
 
 ```bash
-# Using your preferred AUR helper
-yay -S dictate-bin
-# or
-paru -S dictate-bin
+# From source (dictionary GUI)
+cargo build --release --features words-ui
 ```
 
-### Download Binary
+## Recommended shortcuts
 
-1. Download from [GitHub Releases](https://github.com/Aditya190803/dictate/releases)
-2. Install:
+| Key | Behavior |
+|-----|----------|
+| **Super+R** | Live typing — Mistral realtime deltas as you speak (`dictate toggle live`) |
+| **Super+Shift+R** | Smart paste — record, stop, polish once, paste (`dictate toggle smart`) |
 
-```bash
-wget https://github.com/Aditya190803/dictate/releases/latest/download/dictate-linux-x86_64
-mkdir -p ~/.local/bin
-mv dictate-linux-x86_64 ~/.local/bin/dictate
-chmod +x ~/.local/bin/dictate
+GNOME: `dictate shortcuts gnome --install`. Hyprland/Niri: `dictate shortcuts hyprland` / `niri` (paste into config).
 
-# Add to PATH (add to ~/.bashrc or ~/.zshrc)
-export PATH="$HOME/.local/bin:$PATH"
-```
+Default **segmented** dictation (`DICTATE_PROFILE=segmented` or `dictate --daemon`): pause-bound segments, dictionary/snippets/cleanup, optional **LLM polish** per segment, voice edits (“scratch that”). Run `dictate setup` once.
 
-## Quick Start
+## Features
 
-1. **Setup configuration:**
-```bash
-# Create config directory and file
-mkdir -p ~/.config/dictate
-echo "MISTRAL_API_KEY=your_api_key_here" > ~/.config/dictate/.env
-```
+- **STT:** Mistral (default), Groq, or local Whisper (`--features local`)
+- **Polish:** Independent of STT — `POLISH_PROVIDER=auto` uses Mistral if `MISTRAL_API_KEY` is set, else **Ollama** (`ollama pull gemma-4`). Groq/local STT + Ollama polish works.
+- **Dictionary:** `dictate words` — GUI for names, jargon, and misspelling fixes (`words-ui` build)
+- **text.toml:** Dictionary, snippets, cleanup, `[polish]` style/model, command mode
+- **Extras:** `dictate history`, `dictate scratchpad`, clipboard-aware command mode
+- **Output:** stdout, clipboard, type (`ydotool`), or paste — `SHORTCUT_OUTPUT` / `--pipe-to`
 
-2. **Test the application:**
-```bash
-# Run dictate and pipe output to see it working
-dictate | tee /tmp/dictate-output.txt
-```
+## Quick config
 
-3. **Use with signals:**
-```bash
-# Transcribe and output to stdout
-pkill --signal SIGUSR1 dictate
-```
+`~/.config/dictate/.env` (see `.env.example`):
 
-## Quick Reference
-
-### Common Commands
-
-```bash
-# Download local model and exit
-dictate --download-model
-
-# Start dictate and save output to file
-dictate > output.txt
-
-# Start dictate and copy output to clipboard
-dictate --pipe-to wl-copy
-
-# Start dictate and type output directly
-dictate --pipe-to ydotool type --file -
-
-# Command mode: say "fix grammar" / "turn this into bullet points" to transform clipboard text
-dictate --command --pipe-to wl-copy
-
-# Developer modes for local deterministic formatting
-dictate --dictation-mode terminal
-dictate --dictation-mode code-symbols
-dictate --dictation-mode git-commit
-
-# Trigger transcription (if dictate is running)
-pkill --signal SIGUSR1 dictate
-```
-
-### Keybinding Pattern
-
-Most keybindings follow this pattern:
-```bash
-pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate [OPTIONS] &)
-```
-
-This means: "If dictate is running, send signal to transcribe. Otherwise, start dictate with specified options."
-
-## Keyboard Shortcuts Setup
-
-### Hyprland
-
-Add to your `~/.config/hypr/hyprland.conf`:
-
-```bash
-# dictate - Speech to Text (direct typing)
-bind = SUPER, R, exec, pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to ydotool type --file - &)
-
-# dictate - Speech to Text (clipboard copy)  
-bind = SUPER SHIFT, R, exec, pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to wl-copy &)
-```
-
-### Niri
-
-Add to your `~/.config/niri/config.kdl`:
-
-```kdl
-binds {
-    // dictate - Speech to Text (direct typing)
-    Mod+R { spawn "sh" "-c" "pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to ydotool type --file - &)"; }
-    
-    // dictate - Speech to Text (clipboard copy)
-    Mod+Shift+R { spawn "sh" "-c" "pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to wl-copy &)"; }
-}
-```
-
-**Keybinding Functions:**
-- **Super+R** (Hyprland) / **Mod+R** (Niri): Direct typing via ydotool
-- **Super+Shift+R** (Hyprland) / **Mod+Shift+R** (Niri): Copy to clipboard
-
-## Usage Examples
-
-dictate starts on-demand, records audio, transcribes it, outputs to stdout, then exits:
-
-### Basic Usage (stdout)
-
-```bash
-# Terminal 1: Start dictate with output to file
-dictate > transcription.txt
-
-# Terminal 2: Trigger transcription (or use keyboard shortcut)
-pkill --signal SIGUSR1 dictate
-```
-
-### Using --pipe-to Option
-
-The `--pipe-to` option allows you to pipe transcribed text directly to another command:
-
-```bash
-# Copy transcription to clipboard
-dictate --pipe-to wl-copy
-pkill --signal SIGUSR1 dictate
-
-# Type transcription directly into focused window
-dictate --pipe-to ydotool type --file -
-pkill --signal SIGUSR1 dictate
-
-# Process transcription with sed and copy to clipboard
-dictate --pipe-to sh -c "sed 's/hello/hi/g' | wl-copy"
-pkill --signal SIGUSR1 dictate
-
-# Save to file with timestamp
-dictate --pipe-to sh -c "echo \"$(date): $(cat)\" >> speech-log.txt"
-pkill --signal SIGUSR1 dictate
-```
-
-
-## Configuration
-
-Configuration is read from `~/.config/dictate/.env` by default. You can override this location using the `--envfile` flag:
-
-```bash
-dictate --envfile /path/to/custom/.env
-```
-
-Optional text transformations are read from `text.toml` beside the env file. With the default config, create `~/.config/dictate/text.toml`:
-
-```toml
-[dictionary]
-"whisper flow" = "Wispr Flow"
-"high per land" = "Hyprland"
-"vox stroll" = "Voxtral"
-
-[[snippets]]
-trigger = "calendar link"
-text = "Book a time here: https://cal.com/adi"
-
-[[snippets]]
-trigger = "email signature"
-text = "Best,\nAditya"
-
-[cleanup]
-enabled = true
-fix_spacing = true
-capitalize_sentences = true
-fix_punctuation = true
-spoken_punctuation = true
-remove_fillers = true
-clean_repeated_words = true
-spoken_lists = true
-
-[command_mode]
-clipboard_command = ["wl-paste", "--no-newline"]
-```
-
-Dictionary replacements run before snippets, then optional cleanup runs last. Snippets expand when the final transcription exactly matches the trigger. Mistral realtime delta output is not post-processed yet because it arrives as fragments.
-
-Cleanup options are fully local and deterministic:
-
-- `remove_fillers` removes standalone filler words like `um` and `uh`.
-- `fix_spacing` collapses extra spaces and removes spaces before punctuation.
-- `capitalize_sentences` capitalizes sentence starts.
-- `fix_punctuation` adds a final period to prose-like text missing punctuation.
-- `spoken_punctuation` converts words like `exclamation`, `question mark`, `comma`, and `period` into punctuation.
-- `clean_repeated_words` removes adjacent repeated words.
-- `spoken_lists` converts simple spoken enumerations into bullets.
-
-Inline correction phrases like `actually replace correct with right` are always on. For example, `Is this correct? Actually replace correct with right.` becomes `Is this right?`.
-
-Command mode treats speech as a local instruction for clipboard text:
-
-```bash
-# Say: "fix grammar", "turn this into bullet points", "make this more concise",
-# "rewrite casually", or "summarize this paragraph".
-dictate --command --pipe-to wl-copy
-```
-
-Developer modes format dictation for common CLI/developer text:
-
-```bash
-# "cargo build release features local" -> cargo build --release --features local
-dictate --dictation-mode terminal
-
-# "open paren user id colon string close paren arrow result" -> (user_id: String) -> Result
-dictate --dictation-mode code-symbols
-
-# "fix release audio device" -> fix: release audio device
-dictate --dictation-mode git-commit
-
-# Also supported: markdown, file-path, plain
-dictate --dictation-mode markdown
-dictate --dictation-mode file-path
-```
-
-You can edit config from the CLI:
-
-```bash
-dictate config wizard
-dictate config get
-dictate config set provider groq
-dictate config set groq-model whisper-large-v3-turbo
-dictate config set shortcut-key SUPER,R
-dictate config edit
-```
-
-Generate compositor shortcuts:
-
-```bash
-dictate shortcuts hyprland --mode type --key SUPER,R
-dictate shortcuts niri --mode clipboard --key Mod+Shift+R
-```
-
-dictate supports three transcription providers: **Mistral** (default), **Groq**, and **Local Whisper**.
-
-**Default dictation** (no profile to pick): `dictate setup` → `dictate --daemon` → one shortcut (`SUPER,R`). While you speak, dictate commits **segments** (after pauses), runs dictionary/snippets/cleanup, optionally **Mistral chat polish** per segment, and types into the focused app. Say **“scratch that”** to fix what was already inserted.
-
-Run **`dictate setup`** or **`dictate doctor`** to verify. Optional `[polish]` in `text.toml` tweaks the chat model; polish uses the same `MISTRAL_API_KEY` as STT.
-
-**Power users** (legacy env): `DICTATE_PROFILE=live_typing` (raw realtime deltas), `smart_paste` (one paste at end), `batch_clip` (no daemon polish).
-
-### Mistral (Default)
-
-**Required:** Create `~/.config/dictate/.env` with your Mistral API key:
-
-```bash
-MISTRAL_API_KEY=your_api_key_here
-```
-
-**Optional Mistral settings:**
 ```bash
 TRANSCRIPTION_PROVIDER=mistral
-
-# Default: segmented dictation (omit DICTATE_PROFILE). Legacy: live_typing | smart_paste | batch_clip.
-
-# Batch/offline transcription model
-MISTRAL_MODEL=voxtral-mini-latest
-#MISTRAL_BASE_URL=https://api.mistral.ai/v1
-
-# Realtime WebSocket transcription model
-MISTRAL_REALTIME_MODEL=voxtral-mini-transcribe-realtime-2602
-MISTRAL_REALTIME_DELAY_MS=480
-#MISTRAL_REALTIME_BASE_URL=wss://api.mistral.ai
+MISTRAL_API_KEY=...
+DICTATE_PROFILE=segmented          # or live_typing, smart_paste, batch_clip
+SHORTCUT_OUTPUT=type
+SHORTCUT_KEY_LIVE=SUPER,R
+SHORTCUT_KEY_SMART=SUPER,SHIFT+R
+POLISH_PROVIDER=auto               # auto | mistral | ollama
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_POLISH_MODEL=gemma-4
 ```
 
-### Groq
+Optional `~/.config/dictate/text.toml`:
+
+```toml
+preferred_words = ["Hyprland", "Supabase"]
+
+[dictionary]
+"super base" = "Supabase"
+
+[polish]
+enabled = true
+style = "concise"    # casual, formal, email, bullets — see polish_styles
+on_failure = "fallback"
+```
+
+CLI: `dictate config wizard` · `dictate config get|set|edit` · `dictate words`
+
+## Common commands
 
 ```bash
-TRANSCRIPTION_PROVIDER=groq
-GROQ_API_KEY=your_api_key_here
-GROQ_MODEL=whisper-large-v3-turbo
-#GROQ_BASE_URL=https://api.groq.com/openai/v1
-
-# Groq does not support Mistral realtime WebSockets,
-# so it stays on provider batch/VAD behavior.
-BATCH_MODE=true
+dictate --daemon                   # segmented (default product)
+dictate --daemon --mode live       # realtime typing daemon
+dictate --daemon --mode smart      # smart paste daemon
+dictate --pipe-to wl-copy          # one-shot clip → clipboard
+dictate --command                  # transform clipboard from voice instruction
+dictate --download-model           # local Whisper GGML into ~/.local/share/dictate/models
+dictate --dictation-mode terminal  # developer formatting modes
 ```
 
-### Shared Online Settings
+Signal toggle while a daemon runs: `pkill -SIGUSR1 dictate` (shortcuts usually wrap `dictate toggle live|smart`).
 
-```bash
-# Force specific language, or auto-detect
-TRANSCRIPTION_LANGUAGE=auto
+## Profiles (power users)
 
-# API timeout in seconds
-TRANSCRIPTION_TIMEOUT_SECONDS=60
+| `DICTATE_PROFILE` | What you get |
+|-------------------|--------------|
+| `segmented` | Default — phrases, per-segment polish, session context |
+| `live_typing` | Raw realtime deltas, minimal latency |
+| `smart_paste` | One recording, polish whole clip, paste at end |
+| `batch_clip` | One clip, local cleanup only, no LLM polish |
+| `command` | Voice instruction applies to clipboard text |
 
-# Max retry attempts
-TRANSCRIPTION_MAX_RETRIES=3
-```
+## Requirements
 
-### Local Whisper (whisper-rs)
-
-Run transcription locally without sending audio to external APIs. Models are downloaded from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp) in GGML format. Local stream mode uses VAD chunks and defaults away from realtime because it keeps CPU/GPU work local.
-
-Local Whisper is optional at build time. Install it with:
-
-```bash
-DICTATE_BUILD_FROM_SOURCE=yes DICTATE_BUILD_FEATURES=local curl -fsSL https://dictate.adityamer.dev/install.sh | sh
-```
-
-Or build manually with `cargo build --release --features local`.
-
-```bash
-# Switch to local provider
-TRANSCRIPTION_PROVIDER=local
-
-# Model file name stored in ~/.local/share/applications/dictate/models/
-WHISPER_MODEL=ggml-base.en.bin
-
-# Download the model and exit
-dictate --download-model
-```
-
-**Available Models (GGML format):**
-- `ggml-tiny.bin` - Fastest, least accurate (39 MB)
-- `ggml-tiny.en.bin` - English-only tiny model (39 MB)
-- `ggml-base.bin` - Small size, good performance (142 MB)
-- `ggml-base.en.bin` - English-only base model (142 MB)
-- `ggml-small.bin` - Better accuracy than base (466 MB)
-- `ggml-small.en.bin` - English-only small model (466 MB)
-- `ggml-medium.bin` - Good accuracy/speed balance (1.5 GB)
-- `ggml-medium.en.bin` - English-only medium model (1.5 GB)
-- `ggml-large.bin` - Best accuracy, slower (2.9 GB)
-- `ggml-large-v1.bin` - Large model v1 (2.9 GB)
-- `ggml-large-v2.bin` - Large model v2 (2.9 GB)
-- `ggml-large-v3.bin` - Latest large model (2.9 GB)
-
-**Recommendations:**
-- **For English only**: Use `.en.bin` models for better performance
-- **For speed**: `ggml-tiny.en.bin` or `ggml-base.en.bin`
-- **For accuracy**: `ggml-large-v3.bin` or `ggml-medium.en.bin`
-- **For balance**: `ggml-base.en.bin` (default)
-
-If the configured model is missing, the application will exit with an error. Mistral remains the default provider.
-
-### General Settings
-
-**Audio and system settings:**
-```bash
-# Disable audio beeps
-ENABLE_AUDIO_FEEDBACK=false
-
-# Adjust beep volume (0.0 to 1.0)
-BEEP_VOLUME=0.1
-
-# Debug logging
-RUST_LOG=debug
-```
-
-
-## Troubleshooting
-
-### Audio Issues
-
-If audio recording fails:
-- Ensure PipeWire is running: `systemctl --user status pipewire`
-- Check microphone permissions
-- Verify microphone is not muted
-
-
-### API Issues
-
-**Mistral Provider:**
-- Verify `MISTRAL_API_KEY` is valid and has sufficient credits
-- Check internet connectivity
-- Review logs for specific error messages
-
-**Groq Provider:**
-- Verify `GROQ_API_KEY` is valid and has sufficient credits
-- Check internet connectivity
-- Review logs for specific error messages
+- Wayland, PipeWire, Mistral or Groq key **or** local model
+- **ydotool** + user in `input` group for `SHORTCUT_OUTPUT=type` / `paste`
 
 ## Development
 
-### Running Tests
-
 ```bash
 cargo test
-```
-
-### Running with Debug Output
-
-```bash
-# Using default config location (~/.config/dictate/.env)
-RUST_LOG=debug cargo run
-
-# Or using project-local .env file for development
+cargo build --release --features words-ui
 RUST_LOG=debug cargo run -- --envfile .env
-```
-
-## Building from Source
-
-```bash
-git clone https://github.com/Aditya190803/dictate.git
-cd dictate
-
-# Create config directory and copy example configuration
-mkdir -p ~/.config/dictate
-cp .env.example ~/.config/dictate/.env
-# Edit ~/.config/dictate/.env with your API key
-
-# Build the project
-cargo build --release
-
-# Install to local bin
-mkdir -p ~/.local/bin
-cp ./target/release/dictate ~/.local/bin/
 ```
 
 ## License
 
-Licensed under GPL v3.0 or later. Source code: https://github.com/Aditya190803/dictate
-
-See [LICENSE](LICENSE) for full terms.
+GPL-3.0-or-later — [LICENSE](LICENSE) · [GitHub](https://github.com/Aditya190803/dictate)

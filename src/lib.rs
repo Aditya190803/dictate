@@ -1,1 +1,4 @@
-//! Shared modules for the `dictate` binary (expanded in follow-up PRs).
+pub mod word_store;
+
+#[cfg(feature = "words-ui")]
+pub mod words_ui;

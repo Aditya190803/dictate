@@ -1,7 +1,7 @@
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 CARGO ?= cargo
-FEATURES ?=
+FEATURES ?= words-ui
 
 RELEASE_DIR := target/release
 BINARIES := dictate

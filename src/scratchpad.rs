@@ -62,7 +62,9 @@ pub fn open_in_editor() -> Result<()> {
         File::create(&path)?;
     }
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
-    let status = Command::new(&editor).arg(&path).status();
+    let mut parts = editor.split_whitespace();
+    let program = parts.next().unwrap_or("nano");
+    let status = Command::new(program).args(parts).arg(&path).status();
     match status {
         Ok(s) if s.success() => Ok(()),
         Ok(s) => anyhow::bail!("editor exited with {s}"),

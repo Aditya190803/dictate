@@ -74,7 +74,7 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
     }
 
     // SUPER,R = live realtime typing; SUPER+SHIFT+R = smart paste (INSTALL.md default).
-    set_config_value(&path, "profile", "live_typing")?;
+    set_config_value(&path, "profile", "segmented")?;
     set_config_value(&path, "batch-mode", "false")?;
     set_config_value(&path, "transcription-mode", "auto")?;
     set_config_value(&path, "language", "auto")?;

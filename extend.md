@@ -6,7 +6,7 @@ This document lists what **dictate** would need to feel **comparable to [FluidVo
 
 **Reference (FluidVoice):** macOS menu-bar app, global hotkeys, live overlay/notch, multi ASR engines (CoreML Parakeet/Nemotron, Apple Speech, Whisper), smart typing into any app, optional cloud + **Fluid Intelligence** (private on-device LLM), Command Mode agent, Write/Rewrite modes, history/stats, per-app prompts, custom dictionary/vocabulary boost, meeting transcription, local API, auto-updates.
 
-**dictate today:** ~10k LOC Rust, Wayland-first CLI/daemon, Mistral realtime live typing, Groq/Mistral clip + local Whisper, polish/styles, command mode, overlay pill, history, scratchpad, compositor shortcuts, `text.toml` dictionary/snippets.
+**dictate today:** ~10k LOC Rust, Wayland-first CLI/daemon, Mistral realtime + segmented profiles, Groq/Mistral/local Whisper STT, Mistral/Ollama polish, command mode, `dictate words` dictionary GUI, history, scratchpad, compositor shortcuts, `text.toml` dictionary/snippets.
 
 ---
 

@@ -34,7 +34,7 @@ Legend: **Partial** = similar idea, weaker or different UX. **Done** = shipped i
 
 | Flow | dictate |
 |------|---------|
-| Polished writing | **Partial:** `[polish]` Mistral on **smart_paste** + **segmented**; live typing skips polish for latency |
+| Polished writing | **Partial:** `[polish]` via Mistral or Ollama (`POLISH_PROVIDER=auto`) on **smart_paste** + **segmented**; live typing skips polish for latency |
 | **Flow Styles** | **Done:** `[polish].style` — casual, formal, concise, email, bullets |
 | **Smart formatting & backtrack** | **Partial:** cleanup + replace X with Y + voice deletes; `undo that` → last sentence |
 | **Context awareness** | **Partial:** `CONTEXT_EDITING` + session buffer; no app OCR |

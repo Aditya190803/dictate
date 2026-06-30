@@ -4,6 +4,14 @@ use std::path::{Path, PathBuf};
 
 pub const MAX_WORD_LEN: usize = 60;
 
+pub fn word_char_len(word: &str) -> usize {
+    word.chars().count()
+}
+
+fn word_too_long(word: &str) -> bool {
+    word_char_len(word) > MAX_WORD_LEN
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WordBook {
     pub preferred_words: Vec<String>,
@@ -22,7 +30,7 @@ pub struct DictionaryRow {
 impl WordBook {
     pub fn add_preferred_word(&mut self, word: &str) {
         let word = word.trim();
-        if word.is_empty() || word.len() > MAX_WORD_LEN {
+        if word.is_empty() || word_too_long(word) {
             return;
         }
         if !self
@@ -53,7 +61,7 @@ impl WordBook {
         self.dictionary
             .retain(|_, preferred| !preferred.eq_ignore_ascii_case(correct));
         if let Some(wrong) = wrong.map(str::trim).filter(|s| !s.is_empty()) {
-            if wrong.len() <= MAX_WORD_LEN && correct.len() <= MAX_WORD_LEN {
+            if !word_too_long(wrong) && !word_too_long(correct) {
                 self.dictionary
                     .insert(wrong.to_string(), correct.to_string());
             }
@@ -115,10 +123,26 @@ impl WordBook {
             .map(|(heard, _)| heard.clone())
     }
 
+    fn replace_word_casing(&mut self, from: &str, to: &str) {
+        for existing in &mut self.preferred_words {
+            if existing.eq_ignore_ascii_case(from) {
+                *existing = to.to_string();
+            }
+        }
+        for existing in &mut self.starred_words {
+            if existing.eq_ignore_ascii_case(from) {
+                *existing = to.to_string();
+            }
+        }
+    }
+
     pub fn upsert_row(&mut self, word: &str, misspelling: Option<&str>, previous_word: Option<&str>) {
+        let word = word.trim();
         if let Some(prev) = previous_word.map(str::trim).filter(|s| !s.is_empty()) {
             if !prev.eq_ignore_ascii_case(word) {
                 self.remove_preferred_word(prev);
+            } else if prev != word {
+                self.replace_word_casing(prev, word);
             } else {
                 self.set_misspelling(prev, None);
             }
@@ -133,7 +157,7 @@ impl WordBook {
         if word.is_empty() {
             return Err("Enter a word or phrase.".into());
         }
-        if word.len() > MAX_WORD_LEN {
+        if word_too_long(word) {
             return Err(format!("Use at most {MAX_WORD_LEN} characters."));
         }
         let clashes = self.preferred_words.iter().any(|existing| {
@@ -253,7 +277,9 @@ pub fn save_word_book(path: &Path, book: &WordBook) -> Result<()> {
     table.insert("dictionary".to_string(), toml::Value::Table(dictionary));
 
     let serialized = toml::to_string_pretty(&root)?;
-    std::fs::write(path, serialized)?;
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, serialized)?;
+    std::fs::rename(&tmp_path, path)?;
     Ok(())
 }
 

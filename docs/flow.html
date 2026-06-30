@@ -96,7 +96,7 @@
 <h2>1. Startup (every invocation)</h2>
 <ol>
   <li>Parse CLI: optional <code>--daemon</code>, <code>--stream</code>, <code>--pipe-to</code>, <code>--dictation-mode</code>, subcommands (<code>config</code>, <code>history</code>, <code>scratchpad</code>, …).</li>
-  <li>Load <code>.env</code> → <code>Config::from_env()</code> (provider, keys, <code>DICTATE_PROFILE</code>, overlay, context limits, …).</li>
+  <li>Load <code>.env</code> → <code>Config::from_env()</code> (provider, keys, <code>DICTATE_PROFILE</code>, polish backend, context limits, …).</li>
   <li>Load <code>text.toml</code> beside it → dictionary, snippets, cleanup, <code>[polish]</code>, <code>[history]</code>, <code>[command_mode]</code>.</li>
   <li>Legacy override: <code>--mode live|smart</code> maps to <code>live_typing</code> / <code>smart_paste</code> only.</li>
   <li>Resolve output: CLI <code>--pipe-to</code> wins, else <code>SHORTCUT_OUTPUT</code> in .env (type / paste / clipboard / stdout).</li>
@@ -179,13 +179,13 @@
 
   <h3>Per segment (<code>segment_output.rs</code>)</h3>
   <ol>
-    <li>Trim empty; overlay → Processing.</li>
+    <li>Trim empty; skip if no text.</li>
     <li><strong>Intent</strong> on raw STT (<code>intent.rs</code>): insert vs “scratch that”, delete line, replace X with Y, reset context, …</li>
     <li>If insert + segment polish enabled: local cleanup → optional <code>polish_segment()</code> (Mistral chat, prior session window) → text to insert.</li>
     <li><strong>Context session</strong> (<code>context_session.rs</code>): <code>plan_edit</code> + <code>apply_edit</code> on a <code>TranscriptBuffer</code> (tracks what was typed; backspace via ydotool when editing).</li>
     <li>Output via <code>OutputBackend</code>: stdout or <code>--pipe-to</code> (usually ydotool type).</li>
     <li>Append line to local <strong>history</strong> if <code>[history] enabled</code> in text.toml.</li>
-    <li>Beeps + overlay back to Listening.</li>
+    <li>Success beep; daemon stays ready for next phrase.</li>
   </ol>
   <p class="muted">Controlled by <code>CONTEXT_EDITING</code> in .env for non-segment paths; segmented always uses the buffer + intents for finalized segments.</p>
 </div>
@@ -194,7 +194,7 @@
 <p>Same loop in <code>run_daemon_clip_mode</code>:</p>
 <ol>
   <li>Load STT provider once (Mistral / Groq / local).</li>
-  <li>SIGUSR1 while idle → start recording (beep, overlay Listening).</li>
+  <li>SIGUSR1 while idle → start recording (beep).</li>
   <li>SIGUSR1 while recording → stop → WAV → <code>run_clip_transcription()</code>.</li>
 </ol>
 
@@ -232,7 +232,7 @@ else:
     <tr><td>Scratchpad file</td><td><code>dictate scratchpad append</code> (separate from profile)</td></tr>
     <tr><td>Clipboard commands</td><td><code>DICTATE_PROFILE=command</code></td></tr>
     <tr><td>LLM for unknown voice commands</td><td><code>[command_mode] use_llm</code> + API key</td></tr>
-    <tr><td>Recording pill</td><td><code>ENABLE_OVERLAY=true</code> + overlay build</td></tr>
+    <tr><td>Dictionary GUI</td><td><code>dictate words</code> (build with <code>--features words-ui</code>)</td></tr>
     <tr><td>Type into apps</td><td><code>SHORTCUT_OUTPUT=type</code> (+ ydotool)</td></tr>
   </tbody>
 </table>
@@ -249,7 +249,7 @@ else:
 
 <h2>8. Files on disk</h2>
 <ul>
-  <li><code>~/.config/dictate/.env</code> — profile, provider, keys, shortcut output, overlay</li>
+  <li><code>~/.config/dictate/.env</code> — profile, provider, keys, shortcut output, <code>POLISH_PROVIDER</code></li>
   <li><code>~/.config/dictate/text.toml</code> — dictionary, snippets, polish, history, command_mode</li>
   <li><code>~/.local/share/dictate/history.jsonl</code> — optional transcript log</li>
   <li><code>~/.local/share/dictate/scratchpad.md</code> — optional notes</li>

@@ -35,7 +35,7 @@ pub async fn emit_finalized_segment(
                 && !clip.is_empty())
         {
             eprintln!("📋 Clipboard command");
-            match command_mode::run_command_mode(text, None, cm, Some(config)).await {
+            match command_mode::run_command_mode(text, Some(clip.as_str()), cm, Some(config)).await {
                 Ok(out) => {
                     if !out.is_empty() {
                         backend.type_text(&out).await?;

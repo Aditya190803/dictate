@@ -65,7 +65,11 @@ fn rebuild_list(
             "starred-symbolic"
         });
         star.add_css_class("flat");
-        star.set_tooltip_text(Some("Star important words (sorted first)"));
+        star.set_tooltip_text(Some(if row.starred {
+            "Unstar word"
+        } else {
+            "Star important words (sorted first)"
+        }));
         let word_for_star = row.word.clone();
         let on_star = Rc::clone(&on_star);
         star.connect_clicked(move |_| on_star(&word_for_star));
@@ -106,7 +110,7 @@ pub fn run(path: &Path) -> anyhow::Result<()> {
     gtk4::init().map_err(|e| anyhow::anyhow!("GTK init failed: {e}"))?;
 
     let path = path.to_path_buf();
-    let initial_book = load_word_book(&path).unwrap_or_default();
+    let initial_book = load_word_book(&path)?;
     let app = Application::builder()
         .application_id("dev.dictate.words")
         .build();
@@ -354,7 +358,7 @@ fn build_window(app: &Application, path: PathBuf, initial_book: WordBook) {
                     status.set_text("Enter the misspelling Dictate produces, or turn the option off.");
                     return;
                 }
-                if w.len() > MAX_WORD_LEN {
+                if crate::word_store::word_char_len(&w) > MAX_WORD_LEN {
                     status.set_text(&format!("Use at most {MAX_WORD_LEN} characters."));
                     return;
                 }

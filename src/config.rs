@@ -334,7 +334,9 @@ impl Config {
     /// Load environment file and return config.
     pub fn load_env_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        let _ = Self::prune_retired_env_keys(path)?;
+        if let Err(err) = Self::prune_retired_env_keys(path) {
+            log::warn!("failed to prune retired env keys from {}: {err}", path.display());
+        }
         dotenvy::from_path(path)?;
         Ok(Self::from_env())
     }
@@ -413,11 +415,9 @@ impl Config {
             }
         }
 
-        if self.profile == DictateProfile::SmartPaste
-            && !self.transcription_provider.eq_ignore_ascii_case("mistral")
-        {
+        if self.profile == DictateProfile::SmartPaste && !self.polish_available() {
             anyhow::bail!(
-                "DICTATE_PROFILE=smart_paste requires TRANSCRIPTION_PROVIDER=mistral (for LLM polish)."
+                "DICTATE_PROFILE=smart_paste requires a polish backend (MISTRAL_API_KEY or Ollama)."
             );
         }
 

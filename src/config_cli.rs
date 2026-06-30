@@ -195,8 +195,8 @@ fn normalize_config_key(key: &str) -> String {
         "audio_feedback" | "enable_audio_feedback" => "ENABLE_AUDIO_FEEDBACK",
         "beep_volume" => "BEEP_VOLUME",
         "shortcut" | "shortcut_key" => "SHORTCUT_KEY",
-        "shortcut_key_live" | "shortcut-live" => "SHORTCUT_KEY_LIVE",
-        "shortcut_key_smart" | "shortcut-smart" => "SHORTCUT_KEY_SMART",
+        "shortcut_key_live" | "shortcut_live" | "shortcut-live" => "SHORTCUT_KEY_LIVE",
+        "shortcut_key_smart" | "shortcut_smart" | "shortcut-smart" => "SHORTCUT_KEY_SMART",
         "desktop" | "shortcut_desktop" => "SHORTCUT_DESKTOP",
         "mode" | "output_mode" => "SHORTCUT_OUTPUT",
         other => return other.to_uppercase(),
@@ -700,6 +700,8 @@ pub fn run_toggle_daemon(kind: ToggleKind) -> Result<()> {
         .map(|s| s.success())
         .unwrap_or(false);
     if running {
+        stop_other_daemons(kind);
+        std::thread::sleep(std::time::Duration::from_millis(200));
         let status = ProcessCommand::new("pkill")
             .args(["-f", "--signal", "SIGUSR1", &pattern])
             .status()?;
@@ -932,9 +934,12 @@ pub fn install_gnome_shortcuts(env_path: &Path) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    ProcessCommand::new("gsettings")
+    let status = ProcessCommand::new("gsettings")
         .args(["set", schema, "custom-keybindings", &list_val])
         .status()?;
+    if !status.success() {
+        anyhow::bail!("gsettings failed to update custom-keybindings");
+    }
 
     let bind_schema = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:";
     for (path, name, binding, toggle) in [
@@ -952,15 +957,24 @@ pub fn install_gnome_shortcuts(env_path: &Path) -> Result<()> {
         ),
     ] {
         let full = format!("{bind_schema}{path}");
-        ProcessCommand::new("gsettings")
+        let status = ProcessCommand::new("gsettings")
             .args(["set", &full, "name", name])
             .status()?;
-        ProcessCommand::new("gsettings")
+        if !status.success() {
+            anyhow::bail!("gsettings failed to set shortcut name for {path}");
+        }
+        let status = ProcessCommand::new("gsettings")
             .args(["set", &full, "command", &format!("dictate toggle {toggle}")])
             .status()?;
-        ProcessCommand::new("gsettings")
+        if !status.success() {
+            anyhow::bail!("gsettings failed to set shortcut command for {path}");
+        }
+        let status = ProcessCommand::new("gsettings")
             .args(["set", &full, "binding", &binding])
             .status()?;
+        if !status.success() {
+            anyhow::bail!("gsettings failed to set shortcut binding for {path}");
+        }
     }
     println!("GNOME shortcuts installed (dictate toggle live / smart).");
     println!("  Live:  {live_key} → dictate toggle live");
@@ -1022,8 +1036,6 @@ pub fn print_shortcut(args: &ShortcutArgs, env_path: &Path) {
         ShortcutDesktop::Gnome => {
             let toggle = if args.profile == "smart_paste" || args.profile == "smart" {
                 "smart"
-            } else if args.profile == "live_typing" || args.profile == "live" {
-                "live"
             } else {
                 "live"
             };

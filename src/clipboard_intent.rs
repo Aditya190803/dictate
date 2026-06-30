@@ -30,28 +30,17 @@ pub fn looks_like_command_instruction(transcript: &str) -> bool {
 
     const COMMAND_STARTS: &[&str] = &[
         "fix",
-        "make",
-        "turn",
         "rewrite",
         "summarize",
         "translate",
         "rephrase",
         "polish",
-        "edit",
         "format",
         "simplify",
         "expand",
         "shorten",
         "correct",
         "improve",
-        "change",
-        "replace",
-        "delete",
-        "remove",
-        "add",
-        "insert",
-        "update",
-        "clean",
         "proofread",
     ];
     if COMMAND_STARTS.contains(&first.as_str()) {

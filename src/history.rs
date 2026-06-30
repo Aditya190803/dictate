@@ -17,6 +17,11 @@ pub struct HistoryEntry {
 }
 
 fn history_path() -> PathBuf {
+    if let Ok(p) = std::env::var("DICTATE_HISTORY_PATH") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
     dirs::data_dir()
         .unwrap_or_else(|| {
             dirs::home_dir()
@@ -103,31 +108,26 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
 
-    fn with_temp_history<F: FnOnce()>(f: F) {
+    fn with_temp_history<F: FnOnce(&Path)>(f: F) {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         let _g = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("history.jsonl");
-        let _ = path;
-        f();
+        std::env::set_var("DICTATE_HISTORY_PATH", path.to_str().unwrap());
+        f(dir.path());
+        std::env::remove_var("DICTATE_HISTORY_PATH");
     }
 
     #[test]
     fn append_and_list_roundtrip() {
-        with_temp_history(|| {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("h.jsonl");
-            let entry = HistoryEntry {
-                ts: 1,
-                text: "hello".into(),
-                profile: "segmented".into(),
-            };
-            std::fs::create_dir_all(path.parent().unwrap()).ok();
-            let mut f = File::create(&path).unwrap();
-            writeln!(f, "{}", serde_json::to_string(&entry).unwrap()).unwrap();
-            let read: HistoryEntry =
-                serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
-            assert_eq!(read.text, "hello");
+        with_temp_history(|_| {
+            append_transcript("hello world", "segmented", true).unwrap();
+            let entries = list_entries(10).unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].text, "hello world");
+            assert_eq!(entries[0].profile, "segmented");
+            clear_history().unwrap();
+            assert!(list_entries(10).unwrap().is_empty());
         });
     }
 }

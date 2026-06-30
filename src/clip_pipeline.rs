@@ -36,7 +36,8 @@ async fn maybe_run_clipboard_command(text: &str, config: &Config) -> Option<Resu
             && clip.len() >= 12)
     {
         eprintln!("📋 Clipboard command");
-        return Some(command_mode::run_command_mode(text, None, cm, Some(config)).await);
+        let clip_ref = if force { None } else { Some(clip.as_str()) };
+        return Some(command_mode::run_command_mode(text, clip_ref, cm, Some(config)).await);
     }
     None
 }
@@ -228,11 +229,13 @@ pub async fn run_clip_transcription(
                 return Ok(1);
             }
 
-            let _ = crate::history::append_transcript(
+            if let Err(e) = crate::history::append_transcript(
                 &processed_text,
                 req.config.profile.as_str(),
                 req.config.save_transcript_history(),
-            );
+            ) {
+                warn!("Failed to append transcript history: {e}");
+            }
 
             pipe_or_print(req.pipe_command, &processed_text).await
         }

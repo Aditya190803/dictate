@@ -28,23 +28,40 @@ pub struct CleanupConfig {
     pub spoken_lists: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct HistoryConfig {
     #[serde(default = "default_history_enabled")]
     pub enabled: bool,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_history_enabled(),
+        }
+    }
 }
 
 fn default_history_enabled() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CommandModeConfig {
     #[serde(default)]
     pub clipboard_command: Vec<String>,
     /// When local voice commands don't match, use Mistral (needs API key in .env).
     #[serde(default = "default_command_use_llm")]
     pub use_llm: bool,
+}
+
+impl Default for CommandModeConfig {
+    fn default() -> Self {
+        Self {
+            clipboard_command: Vec::new(),
+            use_llm: default_command_use_llm(),
+        }
+    }
 }
 
 fn default_command_use_llm() -> bool {

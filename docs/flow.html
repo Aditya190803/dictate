@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>dictate — how it runs</title>
+  <style>
+    :root {
+      --bg: #0f1114;
+      --surface: #181b21;
+      --border: #2a3038;
+      --text: #e8eaed;
+      --muted: #9aa0a6;
+      --accent: #7cb8ff;
+      --accent2: #8fd4a8;
+      --warn: #f0c674;
+      --code: #c9d1d9;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+      max-width: 52rem;
+      margin: 0 auto;
+      padding: 2rem 1.25rem 4rem;
+    }
+    h1 { font-size: 1.75rem; font-weight: 600; letter-spacing: -0.02em; }
+    h2 {
+      font-size: 1.15rem;
+      margin-top: 2.5rem;
+      padding-bottom: 0.35rem;
+      border-bottom: 1px solid var(--border);
+      color: var(--accent);
+    }
+    h3 { font-size: 1rem; margin-top: 1.5rem; color: var(--accent2); }
+    p, li { color: var(--text); }
+    .muted { color: var(--muted); font-size: 0.92rem; }
+    code, pre {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.85rem;
+    }
+    code {
+      background: var(--surface);
+      padding: 0.12em 0.4em;
+      border-radius: 4px;
+      color: var(--code);
+    }
+    pre {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.1rem;
+      overflow-x: auto;
+    }
+    .diagram {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      margin: 1rem 0;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.78rem;
+      line-height: 1.45;
+      white-space: pre;
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      margin: 1rem 0;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.5rem 0.65rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--surface); color: var(--muted); font-weight: 500; }
+    .path-seg { border-left: 3px solid var(--accent); padding-left: 1rem; margin: 1rem 0; }
+    .path-cmd { border-left: 3px solid var(--warn); padding-left: 1rem; margin: 1rem 0; }
+    a { color: var(--accent); }
+    ul { padding-left: 1.25rem; }
+  </style>
+</head>
+<body>
+
+<h1>dictate — end-to-end flow</h1>
+<p class="muted">
+  One binary, one config story: <code>~/.config/dictate/.env</code> + <code>text.toml</code>.
+  <strong>DICTATE_PROFILE</strong> decides what “kind of session” you get. The recommended shortcut pair is live typing on <code>SUPER,R</code> and smart paste on <code>SUPER+SHIFT+R</code>.
+</p>
+
+<h2>1. Startup (every invocation)</h2>
+<ol>
+  <li>Parse CLI: optional <code>--daemon</code>, <code>--stream</code>, <code>--pipe-to</code>, <code>--dictation-mode</code>, subcommands (<code>config</code>, <code>history</code>, <code>scratchpad</code>, …).</li>
+  <li>Load <code>.env</code> → <code>Config::from_env()</code> (provider, keys, <code>DICTATE_PROFILE</code>, overlay, context limits, …).</li>
+  <li>Load <code>text.toml</code> beside it → dictionary, snippets, cleanup, <code>[polish]</code>, <code>[history]</code>, <code>[command_mode]</code>.</li>
+  <li>Legacy override: <code>--mode live|smart</code> maps to <code>live_typing</code> / <code>smart_paste</code> only.</li>
+  <li>Resolve output: CLI <code>--pipe-to</code> wins, else <code>SHORTCUT_OUTPUT</code> in .env (type / paste / clipboard / stdout).</li>
+</ol>
+
+<h2>2. The big router (<code>main.rs</code>)</h2>
+<p>After config load, exactly <strong>one</strong> audio/STT loop runs:</p>
+
+<div class="diagram">                    ┌─────────────────────────────────────┐
+                    │  args.daemon && use_realtime ?      │
+                    │  use_realtime = mistral realtime    │
+                    │    AND profile ≠ command            │
+                    └──────────────┬──────────────────────┘
+                           yes     │     no
+                    ┌──────────────▼──────────────┐
+                    │ Mistral WebSocket daemon     │     ┌────────────────────────────┐
+                    │ (segmented or live_typing)   │     │ daemon OR smart_paste OR   │
+                    └──────────────────────────────┘     │ command profile ?          │
+                                                         └─────────────┬──────────────┘
+                                                               yes     │ no
+                                                    ┌──────────────────▼─────────────┐
+                                                    │ Clip daemon (toggle record)   │
+                                                    │ SIGUSR1 start/stop → STT clip │
+                                                    └──────────────────┬─────────────┘
+                                                               else  │
+                    ┌──────────────────────────────────────────────▼──────────────┐
+                    │ --stream OR use_realtime (non-daemon) → realtime until SIG   │
+                    └──────────────────────────────────────────────┬──────────────┘
+                                                               else │
+                    ┌──────────────────────────────────────────────▼──────────────┐
+                    │ One-shot clip: record until SIGUSR1 → transcribe → exit      │
+                    └─────────────────────────────────────────────────────────────┘</div>
+
+<table>
+  <thead>
+    <tr><th>Profile</th><th>Typical launch</th><th>Router branch</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>live_typing</code></td>
+      <td><code>dictate --daemon --mode live</code></td>
+      <td>Mistral <strong>realtime</strong> daemon; raw deltas typed while you speak</td>
+    </tr>
+    <tr>
+      <td><code>smart_paste</code></td>
+      <td><code>dictate --daemon --mode smart</code></td>
+      <td><strong>Clip daemon</strong>: record → whole clip STT → one Mistral polish → paste</td>
+    </tr>
+    <tr>
+      <td><code>segmented</code></td>
+      <td><code>dictate --daemon</code> + shortcut</td>
+      <td>Mistral <strong>realtime</strong> daemon; segments finalized with polish + voice edits</td>
+    </tr>
+    <tr>
+      <td><code>batch_clip</code></td>
+      <td>One-shot shortcut without <code>--daemon</code></td>
+      <td>One-shot clip; local text processing only</td>
+    </tr>
+    <tr>
+      <td><code>command</code></td>
+      <td><code>dictate config set profile command</code> + <code>--daemon</code></td>
+      <td><strong>Clip daemon</strong>; STT text = <em>instruction</em>, not document text</td>
+    </tr>
+  </tbody>
+</table>
+
+<p class="muted">
+  <strong>Shortcut behavior:</strong> generated shortcuts match the exact daemon command they launch, so <code>live_typing</code>,
+  <code>smart_paste</code>, and <code>segmented</code> daemons do not steal each other’s SIGUSR1 toggles.
+  <code>live_typing</code> waits for the first shortcut press, then streams typed deltas while active.
+</p>
+
+<h2>3. Realtime WebSocket path</h2>
+<div class="path-seg">
+  <p>Mic → Mistral realtime WebSocket → events:</p>
+  <ul>
+    <li><code>transcription.text.delta</code> — typed immediately in <code>live_typing</code>; previewed only in <code>segmented</code>.</li>
+    <li><code>transcription.segment</code> — in <code>segmented</code>, one finished phrase → <code>emit_finalized_segment()</code>.</li>
+  </ul>
+
+  <h3>Per segment (<code>segment_output.rs</code>)</h3>
+  <ol>
+    <li>Trim empty; overlay → Processing.</li>
+    <li><strong>Intent</strong> on raw STT (<code>intent.rs</code>): insert vs “scratch that”, delete line, replace X with Y, reset context, …</li>
+    <li>If insert + segment polish enabled: local cleanup → optional <code>polish_segment()</code> (Mistral chat, prior session window) → text to insert.</li>
+    <li><strong>Context session</strong> (<code>context_session.rs</code>): <code>plan_edit</code> + <code>apply_edit</code> on a <code>TranscriptBuffer</code> (tracks what was typed; backspace via ydotool when editing).</li>
+    <li>Output via <code>OutputBackend</code>: stdout or <code>--pipe-to</code> (usually ydotool type).</li>
+    <li>Append line to local <strong>history</strong> if <code>[history] enabled</code> in text.toml.</li>
+    <li>Beeps + overlay back to Listening.</li>
+  </ol>
+  <p class="muted">Controlled by <code>CONTEXT_EDITING</code> in .env for non-segment paths; segmented always uses the buffer + intents for finalized segments.</p>
+</div>
+
+<h2>4. Clip daemon path (smart_paste, command, optional segmented without realtime)</h2>
+<p>Same loop in <code>run_daemon_clip_mode</code>:</p>
+<ol>
+  <li>Load STT provider once (Mistral / Groq / local).</li>
+  <li>SIGUSR1 while idle → start recording (beep, overlay Listening).</li>
+  <li>SIGUSR1 while recording → stop → WAV → <code>run_clip_transcription()</code>.</li>
+</ol>
+
+<h3>Inside <code>finalize_transcribed_text</code></h3>
+<pre>if profile == command:
+    run_command_mode(transcript, clipboard, text.toml [command_mode])
+else if profile == smart_paste:
+    local cleanup → polish_transcript (Mistral)
+else:
+    local cleanup (+ developer dictation mode)</pre>
+
+<h2>5. Clipboard commands (same shortcut — auto)</h2>
+<div class="path-cmd">
+  <p><strong>You should not switch profiles or remember a second shortcut.</strong> On every segment/clip, dictate peeks the clipboard:</p>
+  <ul>
+    <li>Clipboard has real text (≥12 chars) <strong>and</strong> you said something short/instruction-like (“fix grammar”, “make this concise”) → <strong>clipboard command</strong> (transform selection, output via pipe).</li>
+    <li>Otherwise → normal dictation (polish + voice edits).</li>
+    <li>“Scratch that” / delete intents never become clipboard commands.</li>
+  </ul>
+  <p><code>DICTATE_PROFILE=command</code> only <em>forces</em> clipboard-command behavior. Normal dictation profiles can auto-detect short clipboard instructions when that path is enabled.</p>
+</div>
+
+<h2>6. Config vs behavior (no extra flags)</h2>
+<table>
+  <thead>
+    <tr><th>You want</th><th>Set this</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Live typing shortcut</td><td><code>dictate --daemon --mode live</code> / <code>DICTATE_PROFILE=live_typing</code></td></tr>
+    <tr><td>Smart paste shortcut</td><td><code>dictate --daemon --mode smart</code> / <code>DICTATE_PROFILE=smart_paste</code></td></tr>
+    <tr><td>Pause-bound polished segments</td><td><code>DICTATE_PROFILE=segmented</code></td></tr>
+    <tr><td>Voice edits on typed text</td><td><code>CONTEXT_EDITING=true</code> (.env)</td></tr>
+    <tr><td>Polish tone</td><td><code>[polish] style = "formal"</code> (text.toml)</td></tr>
+    <tr><td>Transcript history</td><td><code>[history] enabled = true</code> → <code>dictate history list</code></td></tr>
+    <tr><td>Scratchpad file</td><td><code>dictate scratchpad append</code> (separate from profile)</td></tr>
+    <tr><td>Clipboard commands</td><td><code>DICTATE_PROFILE=command</code></td></tr>
+    <tr><td>LLM for unknown voice commands</td><td><code>[command_mode] use_llm</code> + API key</td></tr>
+    <tr><td>Recording pill</td><td><code>ENABLE_OVERLAY=true</code> + overlay build</td></tr>
+    <tr><td>Type into apps</td><td><code>SHORTCUT_OUTPUT=type</code> (+ ydotool)</td></tr>
+  </tbody>
+</table>
+
+<h2>7. Shortcut pattern (compositor)</h2>
+<pre>pgrep -f '[d]ictate --daemon --mode live --pipe-to ydotool type --file -' >/dev/null \
+  &amp;&amp; pkill -f --signal SIGUSR1 '[d]ictate --daemon --mode live --pipe-to ydotool type --file -' \
+  || (dictate --daemon --mode live --pipe-to ydotool type --file - &amp;)</pre>
+<p class="muted">
+  First press starts the matching daemon; later presses toggle that same daemon.
+  The <code>[d]ictate</code> regex avoids matching the shortcut’s own shell process.
+  Generated by <code>dictate shortcuts hyprland --profile live_typing --mode type --key SUPER,R</code>.
+</p>
+
+<h2>8. Files on disk</h2>
+<ul>
+  <li><code>~/.config/dictate/.env</code> — profile, provider, keys, shortcut output, overlay</li>
+  <li><code>~/.config/dictate/text.toml</code> — dictionary, snippets, polish, history, command_mode</li>
+  <li><code>~/.local/share/dictate/history.jsonl</code> — optional transcript log</li>
+  <li><code>~/.local/share/dictate/scratchpad.md</code> — optional notes</li>
+</ul>
+
+<p class="muted" style="margin-top: 3rem;">
+  Source map: <code>main.rs</code> (router), <code>streaming.rs</code> (realtime/VAD), <code>segment_output.rs</code> (segmented finalize),
+  <code>clip_pipeline.rs</code> (clip STT), <code>profile.rs</code> (DICTATE_PROFILE), <code>context_session.rs</code> + <code>intent.rs</code> (voice edits).
+</p>
+
+</body>
+</html>

@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use config::Config;
 use futures::StreamExt;
 use log::{error, info, warn};
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::PathBuf;
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
@@ -21,6 +21,7 @@ mod audio_processing;
 mod beep;
 #[cfg(not(test))]
 mod clip_pipeline;
+mod clipboard_intent;
 mod command;
 mod command_mode;
 mod config;
@@ -28,9 +29,12 @@ mod config_cli;
 mod context_session;
 mod developer_modes;
 mod editing;
+mod history;
 mod intent;
 mod llm_polish;
+mod polish_styles;
 mod profile;
+mod scratchpad;
 mod segment_output;
 mod setup_tui;
 mod streaming;
@@ -51,7 +55,10 @@ use beep::{BeepConfig, BeepPlayer, BeepType};
 use clip_pipeline::{
     process_audio_for_transcription, run_clip_transcription, ClipTranscriptionRequest,
 };
-use config_cli::{print_shortcut, run_config_command, ConfigCommand, ShortcutArgs};
+use config_cli::{
+    print_shortcut, run_autostart_command, run_config_command, run_toggle_daemon, AutostartCommand,
+    ConfigCommand, ShortcutArgs, ToggleKind,
+};
 use profile::DictateProfile;
 #[cfg(not(test))]
 use transcription::{SharedProvider, TranscriptionFactory};
@@ -83,9 +90,9 @@ struct Args {
     #[arg(long)]
     daemon: bool,
 
-    /// Command mode: treat speech as an instruction transforming clipboard text
-    #[arg(long = "command")]
-    command_mode: bool,
+    /// Start daemon warm but idle; shortcuts/SIGUSR1 begin recording
+    #[arg(long)]
+    idle_on_start: bool,
 
     /// Developer dictation mode
     #[arg(long, default_value = "plain")]
@@ -108,6 +115,11 @@ enum Commands {
     },
     /// Print compositor shortcut snippets
     Shortcuts(ShortcutArgs),
+    /// Start or toggle the live/smart daemon (for GNOME shortcuts)
+    Toggle {
+        #[arg(value_enum)]
+        kind: ToggleKind,
+    },
     /// Check config, API keys, and optional dependencies
     Doctor,
     /// Interactive setup (profiles, keys, shortcuts)
@@ -116,6 +128,46 @@ enum Commands {
         #[arg(long)]
         quick: bool,
     },
+    /// Local transcript history (no cloud)
+    History {
+        #[command(subcommand)]
+        command: HistoryCommand,
+    },
+    /// Local markdown notes from dictation
+    Scratchpad {
+        #[command(subcommand)]
+        command: ScratchpadCommand,
+    },
+    /// Open the preferred-words manager for names, tools, and common mishearings
+    Words,
+    /// Install/remove/status warm user services for instant shortcuts
+    Autostart {
+        #[command(subcommand)]
+        command: AutostartCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum HistoryCommand {
+    /// Show recent entries
+    List {
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Delete history file
+    Clear,
+}
+
+#[derive(Subcommand)]
+enum ScratchpadCommand {
+    /// Print scratchpad contents
+    Show,
+    /// Append text (stdin if omitted)
+    Append { text: Option<String> },
+    /// Clear scratchpad
+    Clear,
+    /// Open in $EDITOR
+    Edit,
 }
 
 /// Runtime args plus resolved pipe target (CLI or SHORTCUT_OUTPUT from config).
@@ -233,7 +285,6 @@ async fn run_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Result<()> {
                     &beep_player,
                     config,
                     args.pipe_to,
-                    args.base.command_mode,
                     &args.base.dictation_mode,
                 )
                 .await;
@@ -262,7 +313,6 @@ async fn record_result(
     beep_player: &BeepPlayer,
     config: &Config,
     pipe_command: Option<&Vec<String>>,
-    command_mode: bool,
     dictation_mode: &str,
 ) {
     beep_player.play_async(BeepType::RecordingStop).await.ok();
@@ -275,7 +325,6 @@ async fn record_result(
                 config.audio_sample_rate,
                 config,
                 pipe_command,
-                command_mode,
                 dictation_mode,
             )
             .await
@@ -305,8 +354,6 @@ async fn record_result(
 async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Result<()> {
     info!("Daemon mode — model stays loaded for multiple recordings");
 
-    let overlay = dictate::overlay_ipc::OverlayPublisher::from_env_enabled(config.enable_overlay);
-
     let provider =
         TranscriptionFactory::create_provider(&config.transcription_provider, config).await?;
     let provider: SharedProvider = std::sync::Arc::new(tokio::sync::Mutex::new(provider));
@@ -321,6 +368,17 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
     let mut signals = Signals::new([SIGUSR1, SIGTERM])?;
     let mut is_recording = false;
 
+    if config.profile == DictateProfile::SmartPaste && !args.base.idle_on_start {
+        info!("Smart paste recording started");
+        beep_player.play_async(BeepType::RecordingStart).await.ok();
+        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+        if recorder.start_recording().is_err() {
+            error!("Failed to start recording");
+        } else {
+            is_recording = true;
+        }
+    }
+
     loop {
         let sig =
             tokio::time::timeout(tokio::time::Duration::from_millis(50), signals.next()).await;
@@ -329,7 +387,6 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
             Ok(Some(SIGUSR1)) => {
                 if !is_recording {
                     info!("Recording started");
-                    overlay.set_state(dictate::overlay_ipc::OverlayState::Listening);
                     beep_player.play_async(BeepType::RecordingStart).await.ok();
                     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
                     if recorder.start_recording().is_err() {
@@ -340,7 +397,6 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
                 } else {
                     info!("Recording stopped, transcribing...");
                     is_recording = false;
-                    overlay.set_state(dictate::overlay_ipc::OverlayState::Processing);
                     recorder.stop_recording().ok();
                     beep_player.play_async(BeepType::RecordingStop).await.ok();
 
@@ -356,7 +412,6 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
                                     config,
                                     pipe_command: args.pipe_to,
                                     beep_player: &beep_player,
-                                    command_mode_enabled: args.base.command_mode,
                                     dictation_mode: &args.base.dictation_mode,
                                     provider: Some(std::sync::Arc::clone(&provider)),
                                 },
@@ -364,7 +419,6 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
                             .await;
 
                             recorder.clear_buffer().ok();
-                            overlay.set_state(dictate::overlay_ipc::OverlayState::Idle);
                             match result {
                                 Ok(code) => info!("Done (exit code: {code})"),
                                 Err(e) => error!("Processing failed: {e}"),
@@ -386,13 +440,6 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
             Err(_) => {
                 if is_recording {
                     recorder.process_audio_events().ok();
-                    if config.enable_overlay {
-                        if let Ok(data) = recorder.get_audio_data() {
-                            let tail = data.len().saturating_sub(1600);
-                            overlay
-                                .set_level(dictate::overlay_ipc::level_from_samples(&data[tail..]));
-                        }
-                    }
                 }
             }
         }
@@ -420,7 +467,11 @@ async fn main() -> Result<()> {
     if let Some(command) = &args.command {
         match command {
             Commands::Config { command } => run_config_command(command, &envfile)?,
-            Commands::Shortcuts(shortcut_args) => print_shortcut(shortcut_args),
+            Commands::Shortcuts(shortcut_args) => print_shortcut(shortcut_args, &envfile),
+            Commands::Toggle { kind } => {
+                run_toggle_daemon(*kind)?;
+                return Ok(());
+            }
             Commands::Doctor => {
                 let config = load_config_for_doctor(&envfile)?;
                 config_cli::run_doctor(&config, &envfile);
@@ -428,6 +479,81 @@ async fn main() -> Result<()> {
             }
             Commands::Setup { quick } => {
                 setup_tui::run_setup(*quick, &envfile)?;
+                return Ok(());
+            }
+            Commands::History { command } => {
+                match command {
+                    HistoryCommand::List { limit } => {
+                        for entry in history::list_entries(*limit)? {
+                            println!("{}\t[{}] {}", entry.ts, entry.profile, entry.text);
+                        }
+                    }
+                    HistoryCommand::Clear => {
+                        history::clear_history()?;
+                        eprintln!("History cleared.");
+                    }
+                }
+                return Ok(());
+            }
+            Commands::Scratchpad { command } => {
+                match command {
+                    ScratchpadCommand::Show => {
+                        let s = scratchpad::read_all()?;
+                        if s.is_empty() {
+                            eprintln!("(scratchpad empty)");
+                        } else {
+                            print!("{s}");
+                        }
+                    }
+                    ScratchpadCommand::Append { text } => {
+                        let owned = match text {
+                            Some(t) => t.clone(),
+                            None => {
+                                let mut s = String::new();
+                                std::io::stdin().read_to_string(&mut s)?;
+                                s
+                            }
+                        };
+                        let path = scratchpad::append_text(&owned)?;
+                        eprintln!("Appended to {}", path.display());
+                    }
+                    ScratchpadCommand::Clear => {
+                        scratchpad::clear()?;
+                        eprintln!("Scratchpad cleared.");
+                    }
+                    ScratchpadCommand::Edit => scratchpad::open_in_editor()?,
+                }
+                return Ok(());
+            }
+            Commands::Words => {
+                let text_path = Config::text_config_path_for_env_file(&envfile);
+                #[cfg(feature = "words-ui")]
+                {
+                    dictate::words_ui::run(&text_path)?;
+                }
+                #[cfg(not(feature = "words-ui"))]
+                {
+                    if let Some(parent) = text_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    if !text_path.exists() {
+                        std::fs::write(&text_path, "preferred_words = []\n\n[dictionary]\n")?;
+                    }
+                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                    let status = std::process::Command::new(editor)
+                        .arg(&text_path)
+                        .status()?;
+                    if !status.success() {
+                        anyhow::bail!("Editor exited with status {status}");
+                    }
+                    eprintln!(
+                        "Tip: build with `cargo build --release --features words-ui` for the Dictionary GUI."
+                    );
+                }
+                return Ok(());
+            }
+            Commands::Autostart { command } => {
+                run_autostart_command(command)?;
                 return Ok(());
             }
         }
@@ -472,15 +598,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    if config.profile == DictateProfile::SmartPaste
-        && !config
-            .transcription_provider
-            .eq_ignore_ascii_case("mistral")
-    {
-        error!("Smart mode requires TRANSCRIPTION_PROVIDER=mistral (LLM polish)");
-        std::process::exit(1);
-    }
-
     // Download model and exit
     if args.download_model {
         match download_model(&config.whisper_model).await {
@@ -512,25 +629,25 @@ async fn main() -> Result<()> {
     };
 
     // Mode selection driven by DICTATE_PROFILE (see profile.rs)
-    let use_realtime = config.use_mistral_realtime_stt() && !args.command_mode;
+    let use_realtime = config.use_mistral_realtime_stt();
 
-    if args.daemon && config.enable_overlay {
-        dictate::overlay_ipc::try_spawn_overlay_process();
-    }
+    let daemon = args.daemon;
 
-    if args.daemon && use_realtime {
+    if daemon && use_realtime {
         let (_control_tx, mut control_rx) = tokio::sync::mpsc::channel(8);
         #[cfg(not(test))]
         spawn_signal_forwarder(_control_tx, &[SIGUSR1]);
 
+        let active_on_start = !args.idle_on_start && config.realtime_daemon_active_on_start();
         streaming::run_mistral_realtime_daemon(
             &config,
             pipe_to,
             &mut control_rx,
             &args.dictation_mode,
+            active_on_start,
         )
         .await?;
-    } else if args.daemon || config.profile == profile::DictateProfile::SmartPaste {
+    } else if daemon {
         #[cfg(not(test))]
         run_daemon_clip_mode(&config, &args_with_pipe).await?;
         #[cfg(test)]
@@ -538,7 +655,7 @@ async fn main() -> Result<()> {
             let _ = (&config, pipe_to);
             eprintln!("Daemon mode not available in tests");
         }
-    } else if args.stream || use_realtime {
+    } else if args.stream {
         let (_shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel(1);
         #[cfg(not(test))]
         spawn_signal_forwarder(_shutdown_tx, &[SIGUSR1, SIGTERM]);

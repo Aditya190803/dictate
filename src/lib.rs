@@ -1,4 +1,1 @@
-pub mod overlay_ipc;
-
-#[cfg(feature = "overlay")]
-pub mod overlay_ui;
+//! Shared modules for the `dictate` binary (expanded in follow-up PRs).

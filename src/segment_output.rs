@@ -1,6 +1,7 @@
 //! Per-utterance finalize: local cleanup, optional LLM polish, context buffer + typing.
 
 use crate::beep::{BeepPlayer, BeepType};
+use crate::command_mode;
 use crate::config::Config;
 use crate::context_session::{handle_final_segment, preprocess_insert};
 use crate::intent::{detect_intent, DictationIntent};
@@ -9,7 +10,6 @@ use crate::profile::POLISH_CONTEXT_CHARS;
 use crate::transcript::TranscriptBuffer;
 use crate::typing::{OutputBackend, TypingBackend};
 use anyhow::Result;
-use dictate::overlay_ipc::{OverlayPublisher, OverlayState};
 
 pub async fn emit_finalized_segment(
     config: &Config,
@@ -18,17 +18,45 @@ pub async fn emit_finalized_segment(
     raw_text: &str,
     dictation_mode: &str,
     beep_player: &BeepPlayer,
-    overlay: &OverlayPublisher,
 ) -> Result<()> {
     let text = raw_text.trim();
     if text.is_empty() {
         return Ok(());
     }
 
-    overlay.set_state(OverlayState::Processing);
     eprintln!("📝 {}", text);
 
-    let backend = OutputBackend::new(pipe_command);
+    let backend = OutputBackend::new(pipe_command.clone());
+    let cm = &config.text_processing.command_mode;
+    if let Some(clip) = command_mode::peek_clipboard_text(cm).await {
+        let force = config.profile.is_command_mode();
+        if force
+            || (crate::clipboard_intent::should_apply_clipboard_command(text, &clip)
+                && !clip.is_empty())
+        {
+            eprintln!("📋 Clipboard command");
+            match command_mode::run_command_mode(text, None, cm, Some(config)).await {
+                Ok(out) => {
+                    if !out.is_empty() {
+                        backend.type_text(&out).await?;
+                    }
+                    let _ = crate::history::append_transcript(
+                        text,
+                        config.profile.as_str(),
+                        config.save_transcript_history(),
+                    );
+                    beep_player.play_async(BeepType::Success).await.ok();
+                    return Ok(());
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Clipboard command failed: {e}");
+                    beep_player.play_async(BeepType::Error).await.ok();
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     let mut buffer = session_buffer.lock().await;
 
     if config.profile.uses_segment_polish() {
@@ -37,15 +65,16 @@ pub async fn emit_finalized_segment(
                 let prior = buffer.recent_window(POLISH_CONTEXT_CHARS).to_string();
                 let local = preprocess_insert(&insert, config, dictation_mode);
                 let polish = &config.text_processing.polish;
-                let to_insert = if polish.effective_enabled(true) && config.mistral_api_key.is_some() {
-                    eprintln!("✨ Polishing…");
-                    match polish_segment(&local, &prior, config, polish, dictation_mode).await {
-                        Ok(p) => p,
-                        Err(e) => handle_polish_failure(polish, &local, &e),
-                    }
-                } else {
-                    local
-                };
+                let to_insert =
+                    if polish.effective_enabled(true) && config.polish_available() {
+                        eprintln!("✨ Polishing…");
+                        match polish_segment(&local, &prior, config, polish, dictation_mode).await {
+                            Ok(p) => p,
+                            Err(e) => handle_polish_failure(polish, &local, &e),
+                        }
+                    } else {
+                        local
+                    };
                 if !to_insert.is_empty() {
                     handle_final_segment(&backend, &mut buffer, config, &to_insert, dictation_mode)
                         .await?;
@@ -64,9 +93,13 @@ pub async fn emit_finalized_segment(
         buffer.append_typed(&processed);
     }
 
+    let _ = crate::history::append_transcript(
+        text,
+        config.profile.as_str(),
+        config.save_transcript_history(),
+    );
+
     beep_player.play_async(BeepType::Success).await.ok();
-    overlay.clear_preview();
-    overlay.set_state(OverlayState::Listening);
     Ok(())
 }
 
@@ -76,15 +109,16 @@ mod tests {
     use crate::profile::DictateProfile;
     #[tokio::test]
     async fn segment_polish_off_types_local_processed() {
-        let mut config = Config::default();
-        config.profile = DictateProfile::Segmented;
-        config.mistral_api_key = None;
+        let config = Config {
+            profile: DictateProfile::Segmented,
+            mistral_api_key: None,
+            ..Default::default()
+        };
         let beep = BeepPlayer::new(crate::beep::BeepConfig {
             enabled: false,
             volume: 0.0,
         })
         .unwrap();
-        let overlay = OverlayPublisher::from_env_enabled(false);
         let buffer = tokio::sync::Mutex::new(TranscriptBuffer::new());
         emit_finalized_segment(
             &config,
@@ -93,11 +127,9 @@ mod tests {
             "hello world",
             "plain",
             &beep,
-            &overlay,
         )
         .await
         .unwrap();
         assert!(buffer.lock().await.text().contains("hello"));
     }
-
 }

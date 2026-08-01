@@ -35,7 +35,8 @@ pub async fn emit_finalized_segment(
                 && !clip.is_empty())
         {
             eprintln!("📋 Clipboard command");
-            match command_mode::run_command_mode(text, Some(clip.as_str()), cm, Some(config)).await {
+            match command_mode::run_command_mode(text, Some(clip.as_str()), cm, Some(config)).await
+            {
                 Ok(out) => {
                     if !out.is_empty() {
                         backend.type_text(&out).await?;
@@ -65,16 +66,15 @@ pub async fn emit_finalized_segment(
                 let prior = buffer.recent_window(POLISH_CONTEXT_CHARS).to_string();
                 let local = preprocess_insert(&insert, config, dictation_mode);
                 let polish = &config.text_processing.polish;
-                let to_insert =
-                    if polish.effective_enabled(true) && config.polish_available() {
-                        eprintln!("✨ Polishing…");
-                        match polish_segment(&local, &prior, config, polish, dictation_mode).await {
-                            Ok(p) => p,
-                            Err(e) => handle_polish_failure(polish, &local, &e),
-                        }
-                    } else {
-                        local
-                    };
+                let to_insert = if polish.effective_enabled(true) && config.polish_available() {
+                    eprintln!("✨ Polishing…");
+                    match polish_segment(&local, &prior, config, polish, dictation_mode).await {
+                        Ok(p) => p,
+                        Err(e) => handle_polish_failure(polish, &local, &e),
+                    }
+                } else {
+                    local
+                };
                 if !to_insert.is_empty() {
                     handle_final_segment(&backend, &mut buffer, config, &to_insert, dictation_mode)
                         .await?;
@@ -120,16 +120,9 @@ mod tests {
         })
         .unwrap();
         let buffer = tokio::sync::Mutex::new(TranscriptBuffer::new());
-        emit_finalized_segment(
-            &config,
-            None,
-            &buffer,
-            "hello world",
-            "plain",
-            &beep,
-        )
-        .await
-        .unwrap();
+        emit_finalized_segment(&config, None, &buffer, "hello world", "plain", &beep)
+            .await
+            .unwrap();
         assert!(buffer.lock().await.text().contains("hello"));
     }
 }

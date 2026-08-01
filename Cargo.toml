@@ -2,7 +2,7 @@
 name = "dictate"
 version = "1.1.0-dev"
 edition = "2021"
-description = "Speech-to-text tool for Wayland with stdout output"
+description = "Speech-to-text tool for Wayland and Windows with stdout output"
 license = "GPL-3.0-or-later"
 authors = ["Aditya Mer <adityamer.work@gmail.com>"]
 
@@ -20,11 +20,10 @@ words-ui = ["dep:gtk4"]
 tokio = { version = "1.0", features = ["full"] }
 anyhow = "1.0"
 reqwest = { version = "0.12", features = ["multipart", "stream", "json"] }
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# TLS backend is per-target: rustls/ring on Unix, SChannel on Windows (ring
+# needs a C toolchain that a stock Windows box does not have).
+tokio-tungstenite = "0.24"
 base64 = "0.22"
-signal-hook = "0.3"
-signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 futures = "0.3"
 clap = { version = "4.0", features = ["derive"] }
 inquire = "0.7"
@@ -52,6 +51,25 @@ regex = "1.10"
 async-trait = "0.1"
 
 gtk4 = { version = "0.11", optional = true }
+
+# Unix daemons are toggled with SIGUSR1; Windows uses the named-pipe control
+# channel in src/control.rs instead.
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
+signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+# Native typing (SendInput), clipboard, global hotkeys, and autostart.
+[target.'cfg(windows)'.dependencies]
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 tempfile = "3.0"

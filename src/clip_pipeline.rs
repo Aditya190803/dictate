@@ -255,7 +255,7 @@ pub async fn run_clip_transcription(
     Ok(exit_code)
 }
 
-/// Clip mode without a pre-loaded provider; creates beeps internally (one-shot SIGUSR1 flow).
+/// Clip mode without a pre-loaded provider; creates beeps internally (one-shot toggle flow).
 pub async fn process_audio_for_transcription(
     audio_data: Vec<f32>,
     sample_rate: u32,

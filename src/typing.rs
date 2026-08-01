@@ -1,4 +1,5 @@
 use crate::command;
+use crate::platform;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::io::Write;
@@ -43,13 +44,8 @@ impl TypingBackend for OutputBackend {
         }
 
         if let Some(cmd) = &self.pipe_command {
-            if cmd.first().is_some_and(|name| name.ends_with("ydotool")) {
-                let mut key_cmd = vec!["ydotool".to_string(), "key".to_string()];
-                for _ in 0..count {
-                    key_cmd.push("14:1".to_string());
-                    key_cmd.push("14:0".to_string());
-                }
-                command::execute_with_input(&key_cmd, "").await?;
+            if let Some((key_cmd, input)) = platform::backspace_invocation(cmd, count) {
+                command::execute_with_input(&key_cmd, &input).await?;
             } else {
                 let backspaces = "\u{0008}".repeat(count);
                 command::execute_with_input(cmd, &backspaces).await?;

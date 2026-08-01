@@ -1,3 +1,4 @@
+use crate::platform;
 use crate::profile::DictateProfile;
 use crate::text_processing::TextProcessingConfig;
 use anyhow::Result;
@@ -11,24 +12,17 @@ pub enum PolishBackend {
 }
 
 /// Ctrl+V via ydotool with explicit press/release. Never use `29:125` — that leaves Ctrl+Super stuck down.
+#[cfg(unix)]
 pub const YDOTOOL_PASTE_SHELL: &str = "wl-copy && ydotool key 29:1 47:1 47:0 29:0";
 
+/// Resolve `SHORTCUT_OUTPUT` to a pipe target for the current platform.
+///
+/// Wayland shells out to ydotool/wl-copy; Windows uses in-process sinks. See
+/// [`crate::platform`].
 fn parse_pipe_to_env(mode: Option<&str>) -> Option<Vec<String>> {
     match mode?.trim().to_lowercase().as_str() {
-        "type" | "typing" => Some(vec![
-            "ydotool".to_string(),
-            "type".to_string(),
-            "--file".to_string(),
-            "-".to_string(),
-        ]),
-        "clipboard" | "copy" => Some(vec!["wl-copy".to_string()]),
-        "paste" | "clipboard_paste" => Some(vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            YDOTOOL_PASTE_SHELL.to_string(),
-        ]),
         "stdout" | "" => None,
-        _ => None,
+        mode => platform::pipe_to_for_mode(mode),
     }
 }
 
@@ -244,10 +238,7 @@ impl Config {
     /// `auto`: Mistral if key set, else Ollama. Explicit `mistral` / `ollama` require that backend.
     pub fn resolve_polish_backend(&self) -> Option<PolishBackend> {
         let mode = self.polish_provider.trim().to_lowercase();
-        let mistral = self
-            .mistral_api_key
-            .as_ref()
-            .is_some_and(|k| !k.is_empty());
+        let mistral = self.mistral_api_key.as_ref().is_some_and(|k| !k.is_empty());
         match mode.as_str() {
             "mistral" => {
                 if mistral {
@@ -335,7 +326,10 @@ impl Config {
     pub fn load_env_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         if let Err(err) = Self::prune_retired_env_keys(path) {
-            log::warn!("failed to prune retired env keys from {}: {err}", path.display());
+            log::warn!(
+                "failed to prune retired env keys from {}: {err}",
+                path.display()
+            );
         }
         dotenvy::from_path(path)?;
         Ok(Self::from_env())
@@ -634,10 +628,7 @@ mod tests {
             polish_provider: "auto".to_string(),
             ..Default::default()
         };
-        assert_eq!(
-            config.resolve_polish_backend(),
-            Some(PolishBackend::Ollama)
-        );
+        assert_eq!(config.resolve_polish_backend(), Some(PolishBackend::Ollama));
     }
 
     #[test]

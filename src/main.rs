@@ -8,14 +8,6 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 
-#[cfg(not(test))]
-use log::debug;
-
-#[cfg(not(test))]
-use signal_hook::consts::{SIGTERM, SIGUSR1};
-#[cfg(not(test))]
-use signal_hook_tokio::Signals;
-
 mod audio;
 mod audio_processing;
 mod beep;
@@ -27,11 +19,13 @@ mod command_mode;
 mod config;
 mod config_cli;
 mod context_session;
+mod control;
 mod developer_modes;
 mod editing;
 mod history;
 mod intent;
 mod llm_polish;
+mod platform;
 mod polish_styles;
 mod profile;
 mod scratchpad;
@@ -59,6 +53,9 @@ use config_cli::{
     print_shortcut, run_autostart_command, run_config_command, run_toggle_daemon, AutostartCommand,
     ConfigCommand, ShortcutArgs, ToggleKind,
 };
+#[cfg(not(test))]
+use control::{Control, ControlEvent};
+#[cfg(not(test))]
 use profile::DictateProfile;
 #[cfg(not(test))]
 use transcription::{SharedProvider, TranscriptionFactory};
@@ -90,7 +87,7 @@ struct Args {
     #[arg(long)]
     daemon: bool,
 
-    /// Start daemon warm but idle; shortcuts/SIGUSR1 begin recording
+    /// Start daemon warm but idle; a shortcut or `dictate toggle` begins recording
     #[arg(long)]
     idle_on_start: bool,
 
@@ -115,7 +112,7 @@ enum Commands {
     },
     /// Print compositor shortcut snippets
     Shortcuts(ShortcutArgs),
-    /// Start or toggle the live/smart daemon (for GNOME shortcuts)
+    /// Start or toggle the live/smart daemon (what a shortcut runs)
     Toggle {
         #[arg(value_enum)]
         kind: ToggleKind,
@@ -140,10 +137,17 @@ enum Commands {
     },
     /// Open the preferred-words manager for names, tools, and common mishearings
     Words,
-    /// Install/remove/status warm user services for instant shortcuts
+    /// Install/remove/status login startup for instant shortcuts
     Autostart {
         #[command(subcommand)]
         command: AutostartCommand,
+    },
+    /// Hold the global shortcuts and toggle daemons when they are pressed
+    #[cfg(windows)]
+    Hotkeys {
+        /// Start idle daemons up front so the first press has no cold start
+        #[arg(long)]
+        warm: bool,
     },
 }
 
@@ -267,18 +271,19 @@ async fn run_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Result<()> {
         return Err(e);
     }
 
-    info!("Recording started. Send SIGUSR1 to transcribe.");
+    info!("Recording started. {} to transcribe.", control::TOGGLE_HINT);
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-    let mut signals = Signals::new([SIGUSR1, SIGTERM])?;
+    let mut control =
+        Control::start_best_effort(control::Slot::from_mode(args.base.mode.as_deref()));
 
     loop {
-        let sig =
-            tokio::time::timeout(tokio::time::Duration::from_millis(50), signals.next()).await;
+        let event =
+            tokio::time::timeout(tokio::time::Duration::from_millis(50), control.recv()).await;
 
-        match sig {
-            Ok(Some(SIGUSR1)) => {
-                info!("SIGUSR1 received: transcribing");
+        match event {
+            Ok(Some(ControlEvent::Toggle)) => {
+                info!("Toggle received: transcribing");
                 recorder.stop_recording().ok();
                 record_result(
                     &recorder,
@@ -290,13 +295,12 @@ async fn run_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Result<()> {
                 .await;
                 break;
             }
-            Ok(Some(SIGTERM)) => {
-                info!("SIGTERM received: shutting down");
+            Ok(Some(ControlEvent::Shutdown)) | Ok(None) => {
+                info!("Shutdown requested");
                 recorder.stop_recording().ok();
                 recorder.clear_buffer().ok();
                 break;
             }
-            Ok(_) => {}
             Err(_) => {
                 recorder.process_audio_events().ok();
             }
@@ -365,7 +369,7 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
     };
     let beep_player = BeepPlayer::new(beep_config)?;
     let mut recorder = AudioRecorder::from_config(config)?;
-    let mut signals = Signals::new([SIGUSR1, SIGTERM])?;
+    let mut control = Control::start(control::Slot::from_mode(args.base.mode.as_deref()))?;
     let mut is_recording = false;
 
     if config.profile == DictateProfile::SmartPaste && !args.base.idle_on_start {
@@ -380,11 +384,11 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
     }
 
     loop {
-        let sig =
-            tokio::time::timeout(tokio::time::Duration::from_millis(50), signals.next()).await;
+        let event =
+            tokio::time::timeout(tokio::time::Duration::from_millis(50), control.recv()).await;
 
-        match sig {
-            Ok(Some(SIGUSR1)) => {
+        match event {
+            Ok(Some(ControlEvent::Toggle)) => {
                 if !is_recording {
                     info!("Recording started");
                     beep_player.play_async(BeepType::RecordingStart).await.ok();
@@ -428,15 +432,14 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
                     }
                 }
             }
-            Ok(Some(SIGTERM)) => {
-                info!("SIGTERM received: shutting down daemon");
+            Ok(Some(ControlEvent::Shutdown)) | Ok(None) => {
+                info!("Shutdown requested: stopping daemon");
                 if is_recording {
                     recorder.stop_recording().ok();
                 }
                 recorder.clear_buffer().ok();
                 break;
             }
-            Ok(_) => {}
             Err(_) => {
                 if is_recording {
                     recorder.process_audio_events().ok();
@@ -539,8 +542,8 @@ async fn main() -> Result<()> {
                     if !text_path.exists() {
                         std::fs::write(&text_path, "preferred_words = []\n\n[dictionary]\n")?;
                     }
-                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-                    let status = std::process::Command::new(editor)
+                    let editor = platform::default_editor();
+                    let status = std::process::Command::new(&editor)
                         .arg(&text_path)
                         .status()?;
                     if !status.success() {
@@ -554,6 +557,11 @@ async fn main() -> Result<()> {
             }
             Commands::Autostart { command } => {
                 run_autostart_command(command)?;
+                return Ok(());
+            }
+            #[cfg(windows)]
+            Commands::Hotkeys { warm } => {
+                config_cli::run_hotkey_agent(*warm, &envfile).await?;
                 return Ok(());
             }
         }
@@ -633,10 +641,14 @@ async fn main() -> Result<()> {
 
     let daemon = args.daemon;
 
+    #[cfg(not(test))]
+    let slot = control::Slot::from_mode(args.mode.as_deref());
+
     if daemon && use_realtime {
         let (_control_tx, mut control_rx) = tokio::sync::mpsc::channel(8);
+        // A daemon keeps running after a stop, so only toggles reach the loop.
         #[cfg(not(test))]
-        spawn_signal_forwarder(_control_tx, &[SIGUSR1]);
+        control::spawn_forwarder(Control::start(slot)?, _control_tx, false);
 
         let active_on_start = !args.idle_on_start && config.realtime_daemon_active_on_start();
         streaming::run_mistral_realtime_daemon(
@@ -657,8 +669,9 @@ async fn main() -> Result<()> {
         }
     } else if args.stream {
         let (_shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel(1);
+        // One-shot stream: either kind of control message ends it.
         #[cfg(not(test))]
-        spawn_signal_forwarder(_shutdown_tx, &[SIGUSR1, SIGTERM]);
+        control::spawn_forwarder(Control::start_best_effort(slot), _shutdown_tx, true);
 
         streaming::run_stream(&config, pipe_to, &mut shutdown_rx, &args.dictation_mode).await?;
     } else {
@@ -672,34 +685,6 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-// ─── Signal forwarding ───────────────────────────────────────────────────────
-
-/// Forward OS signals to a tokio mpsc channel.
-///
-/// Each time one of the given signals is received, `()` is sent on the channel.
-/// Runs as a background task until the channel is closed.
-#[cfg(not(test))]
-fn spawn_signal_forwarder(sender: tokio::sync::mpsc::Sender<()>, signals: &[i32]) {
-    let sigs = signals.to_vec();
-    tokio::spawn(async move {
-        let mut signal_stream = match Signals::new(&sigs) {
-            Ok(s) => s,
-            Err(e) => {
-                error!("Failed to set up signal handler: {e}");
-                return;
-            }
-        };
-
-        while let Some(signal) = signal_stream.next().await {
-            debug!("Received signal: {signal:?}");
-            if sender.send(()).await.is_err() {
-                // Channel closed, stop forwarding
-                break;
-            }
-        }
-    });
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

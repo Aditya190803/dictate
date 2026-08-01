@@ -15,6 +15,14 @@ const DEFAULT_CHANNELS: u16 = 1;
 #[cfg(test)]
 const DEFAULT_MAX_RECORDING_DURATION_SECONDS: usize = 300;
 
+/// Name of the microphone recording would use, or `None` if there is none.
+#[cfg_attr(unix, allow(dead_code))]
+pub fn default_input_device_name() -> Option<String> {
+    cpal::default_host()
+        .default_input_device()
+        .and_then(|device| device.name().ok())
+}
+
 /// Captures audio from the default input device using CPAL.
 ///
 /// Supports both clip mode (record → stop → retrieve) and continuous streaming.

@@ -165,7 +165,7 @@ pub async fn run_stream(
     }
 
     eprintln!("🎙️  dictate — polished segments after each pause");
-    eprintln!("   Press Super+R again or send SIGTERM to stop");
+    eprintln!("   {} to stop", crate::control::TOGGLE_HINT);
 
     let beep_config = BeepConfig {
         enabled: config.enable_audio_feedback,
@@ -555,9 +555,12 @@ async fn run_mistral_realtime_inner(
     }
     eprintln!("   Model: {}", config.mistral_realtime_model);
     if active_on_start {
-        eprintln!("   Press the shortcut again, send SIGUSR1, or send SIGTERM to stop");
+        eprintln!("   {} to stop", crate::control::TOGGLE_HINT);
     } else {
-        eprintln!("   Warm daemon ready; press shortcut/SIGUSR1 to start or stop");
+        eprintln!(
+            "   Warm daemon ready; {} to start or stop",
+            crate::control::TOGGLE_HINT
+        );
     }
 
     let beep_config = BeepConfig {

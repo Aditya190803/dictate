@@ -147,7 +147,11 @@ pub async fn transform_with_llm(
     run_polish_chat(&user_body, system, config, polish).await
 }
 
-fn polish_model_for_backend(_config: &Config, polish: &PolishConfig, backend: PolishBackend) -> String {
+fn polish_model_for_backend(
+    _config: &Config,
+    polish: &PolishConfig,
+    backend: PolishBackend,
+) -> String {
     let configured = polish.model.trim();
     match backend {
         PolishBackend::Mistral => {
@@ -158,8 +162,8 @@ fn polish_model_for_backend(_config: &Config, polish: &PolishConfig, backend: Po
             }
         }
         PolishBackend::Ollama => {
-            let mistral_api_default = configured.is_empty()
-                || configured.eq_ignore_ascii_case("mistral-small-latest");
+            let mistral_api_default =
+                configured.is_empty() || configured.eq_ignore_ascii_case("mistral-small-latest");
             if mistral_api_default {
                 std::env::var("OLLAMA_POLISH_MODEL")
                     .unwrap_or_else(|_| DEFAULT_OLLAMA_POLISH_MODEL.to_string())
@@ -195,15 +199,7 @@ async fn run_polish_chat(
 
         let result = match backend {
             PolishBackend::Mistral => {
-                run_mistral_chat(
-                    &client,
-                    user_body,
-                    system,
-                    config,
-                    polish,
-                    &model,
-                )
-                .await
+                run_mistral_chat(&client, user_body, system, config, polish, &model).await
             }
             PolishBackend::Ollama => {
                 run_ollama_chat(&client, user_body, system, config, polish, &model).await
@@ -311,11 +307,7 @@ async fn run_ollama_chat(
     });
 
     let mut req = client.post(&url).json(&body);
-    if let Some(key) = config
-        .ollama_api_key
-        .as_ref()
-        .filter(|k| !k.is_empty())
-    {
+    if let Some(key) = config.ollama_api_key.as_ref().filter(|k| !k.is_empty()) {
         req = req.header("Authorization", format!("Bearer {key}"));
     }
 

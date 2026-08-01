@@ -355,7 +355,9 @@ fn build_window(app: &Application, path: PathBuf, initial_book: WordBook) {
             let miss = if correct_misspelling.is_active() {
                 let w = wrong_entry.text().trim().to_string();
                 if w.is_empty() {
-                    status.set_text("Enter the misspelling Dictate produces, or turn the option off.");
+                    status.set_text(
+                        "Enter the misspelling Dictate produces, or turn the option off.",
+                    );
                     return;
                 }
                 if crate::word_store::word_char_len(&w) > MAX_WORD_LEN {
@@ -368,11 +370,7 @@ fn build_window(app: &Application, path: PathBuf, initial_book: WordBook) {
             };
             {
                 let mut b = book.borrow_mut();
-                b.upsert_row(
-                    &word,
-                    miss.as_deref(),
-                    prev.as_deref(),
-                );
+                b.upsert_row(&word, miss.as_deref(), prev.as_deref());
                 save_and_status(&path, &b, &status);
             }
             *editing_word.borrow_mut() = None;

@@ -592,6 +592,21 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
     if config.batch_mode || config.profile.implies_batch_stt() {
         println!("  Batch STT path (profile or legacy BATCH_MODE)");
     }
+    if config.use_realtime_stt() {
+        println!(
+            "✓ Realtime WebSocket STT ({})",
+            config.transcription_provider
+        );
+    }
+    // Shortcut-spawned daemons run windowless, so this is the only record of why
+    // one failed.
+    println!(
+        "  Daemon logs: {}",
+        daemon_log_path(ToggleKind::Live)
+            .parent()
+            .map(|p| p.join("{live,smart}-daemon.log").display().to_string())
+            .unwrap_or_default()
+    );
 
     match config.transcription_provider.to_lowercase().as_str() {
         "mistral" => {
@@ -818,13 +833,49 @@ fn stop_other_daemons(keep: ToggleKind) {
     }
 }
 
+/// Where a shortcut-spawned daemon writes its output.
+///
+/// These are started windowless, so anything they print is otherwise lost — a
+/// daemon that fails to reach its provider, or cannot register audio, would
+/// simply appear to do nothing. Keeping the last run on disk makes that
+/// diagnosable: `dictate doctor` prints the path.
+pub fn daemon_log_path(kind: ToggleKind) -> PathBuf {
+    get_default_config_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(format!("{}-daemon.log", kind.as_str()))
+}
+
+fn daemon_log_target(argv: &[String]) -> Option<std::fs::File> {
+    let kind = if argv.iter().any(|a| a == "smart") {
+        ToggleKind::Smart
+    } else {
+        ToggleKind::Live
+    };
+    let path = daemon_log_path(kind);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok()?;
+    }
+    // Truncate per launch: the interesting failure is always the latest one.
+    std::fs::File::create(path).ok()
+}
+
 fn spawn_daemon(argv: &[String]) -> Result<()> {
     let mut command = ProcessCommand::new(&argv[0]);
-    command
-        .args(&argv[1..])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+    command.args(&argv[1..]).stdin(std::process::Stdio::null());
+
+    // One handle, cloned — opening the path twice would truncate the first.
+    match daemon_log_target(argv).and_then(|f| f.try_clone().ok().map(|c| (f, c))) {
+        Some((out, err)) => {
+            command.stdout(out).stderr(err);
+        }
+        None => {
+            command
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+        }
+    }
 
     #[cfg(windows)]
     {

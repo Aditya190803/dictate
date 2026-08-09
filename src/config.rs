@@ -305,11 +305,29 @@ impl Config {
 
     /// Mistral realtime WebSocket STT (default segmented + legacy live typing).
     pub fn use_mistral_realtime_stt(&self) -> bool {
+        self.realtime_capable_profile()
+            && self.transcription_provider.eq_ignore_ascii_case("mistral")
+            && !self.transcription_mode.eq_ignore_ascii_case("batch")
+    }
+
+    /// Deepgram realtime WebSocket STT — same profiles as Mistral, different wire
+    /// protocol (raw PCM frames in, `Results` messages out, no session handshake).
+    pub fn use_deepgram_realtime_stt(&self) -> bool {
+        self.realtime_capable_profile()
+            && self.transcription_provider.eq_ignore_ascii_case("deepgram")
+            && !self.transcription_mode.eq_ignore_ascii_case("batch")
+    }
+
+    /// Whether any realtime WebSocket path can run, regardless of provider.
+    pub fn use_realtime_stt(&self) -> bool {
+        self.use_mistral_realtime_stt() || self.use_deepgram_realtime_stt()
+    }
+
+    fn realtime_capable_profile(&self) -> bool {
         matches!(
             self.profile,
             DictateProfile::Segmented | DictateProfile::LiveTyping
-        ) && self.transcription_provider.eq_ignore_ascii_case("mistral")
-            && !self.transcription_mode.eq_ignore_ascii_case("batch")
+        )
     }
 
     /// Effective pipe command: CLI override or configured default.

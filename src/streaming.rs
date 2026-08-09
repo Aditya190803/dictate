@@ -157,9 +157,14 @@ pub async fn run_stream(
             .await;
     }
 
+    if should_use_deepgram_realtime(config) {
+        return run_deepgram_realtime_stream(config, pipe_command, shutdown_rx, dictation_mode)
+            .await;
+    }
+
     if config.transcription_mode.eq_ignore_ascii_case("realtime") {
         eprintln!(
-            "⚠️  Realtime WebSocket STT is only available for Mistral; using batch/VAD streaming for {}",
+            "⚠️  Realtime WebSocket STT is available for Mistral and Deepgram; using batch/VAD streaming for {}",
             config.transcription_provider
         );
     }
@@ -307,6 +312,296 @@ fn mistral_realtime_url(config: &Config) -> String {
         "{}/v1/audio/transcriptions/realtime?model={}&target_streaming_delay_ms={}",
         base, config.mistral_realtime_model, config.mistral_realtime_delay_ms
     )
+}
+
+fn should_use_deepgram_realtime(config: &Config) -> bool {
+    config.use_deepgram_realtime_stt()
+}
+
+/// Deepgram streaming endpoint.
+///
+/// Unlike Mistral there is no session handshake: every option is a query
+/// parameter, audio goes up as raw binary PCM frames, and transcripts come back
+/// as `Results` messages. `endpointing` is what makes Deepgram emit a final
+/// result at a natural pause instead of only at end of stream.
+fn deepgram_realtime_url(config: &Config) -> String {
+    let base = config
+        .deepgram_base_url
+        .clone()
+        .unwrap_or_else(|| "https://api.deepgram.com".to_string());
+    let base = base
+        .trim_end_matches('/')
+        .replacen("https://", "wss://", 1)
+        .replacen("http://", "ws://", 1);
+
+    let mut url = format!(
+        "{}/v1/listen?model={}&encoding=linear16&sample_rate=16000&channels=1\
+         &smart_format=true&interim_results=false&endpointing=300",
+        base, config.deepgram_model
+    );
+    // `auto` is dictate's sentinel, not a Deepgram code — omitting it lets the
+    // model use its own default rather than being rejected.
+    let lang = config.transcription_language.trim();
+    if !lang.is_empty() && !lang.eq_ignore_ascii_case("auto") {
+        url.push_str("&language=");
+        url.push_str(lang);
+    }
+    url
+}
+
+async fn run_deepgram_realtime_stream(
+    config: &Config,
+    pipe_command: Option<&Vec<String>>,
+    shutdown_rx: &mut tokio::sync::mpsc::Receiver<()>,
+    dictation_mode: &str,
+) -> Result<()> {
+    run_deepgram_realtime_inner(
+        config,
+        pipe_command,
+        shutdown_rx,
+        dictation_mode,
+        true,
+        true,
+    )
+    .await
+}
+
+pub async fn run_deepgram_realtime_daemon(
+    config: &Config,
+    pipe_command: Option<&Vec<String>>,
+    control_rx: &mut tokio::sync::mpsc::Receiver<()>,
+    dictation_mode: &str,
+    active_on_start: bool,
+) -> Result<()> {
+    run_deepgram_realtime_inner(
+        config,
+        pipe_command,
+        control_rx,
+        dictation_mode,
+        active_on_start,
+        false,
+    )
+    .await
+}
+
+async fn run_deepgram_realtime_inner(
+    config: &Config,
+    pipe_command: Option<&Vec<String>>,
+    control_rx: &mut tokio::sync::mpsc::Receiver<()>,
+    dictation_mode: &str,
+    active_on_start: bool,
+    exit_on_signal: bool,
+) -> Result<()> {
+    let api_key = config
+        .deepgram_api_key
+        .clone()
+        .ok_or_else(|| anyhow!("DEEPGRAM_API_KEY is required for Deepgram realtime STT"))?;
+
+    let type_deltas = config.profile == crate::profile::DictateProfile::LiveTyping;
+
+    if config.profile.uses_segment_polish() {
+        eprintln!("🎙️  dictate — polished segments (Deepgram realtime)");
+    } else {
+        eprintln!("🎙️  dictate realtime mode — Deepgram WebSocket STT");
+    }
+    eprintln!("   Model: {}", config.deepgram_model);
+    if active_on_start {
+        eprintln!("   {} to stop", crate::control::TOGGLE_HINT);
+    } else {
+        eprintln!(
+            "   Warm daemon ready; {} to start or stop",
+            crate::control::TOGGLE_HINT
+        );
+    }
+
+    let beep_player = BeepPlayer::new(BeepConfig {
+        enabled: config.enable_audio_feedback,
+        volume: config.beep_volume,
+    })?;
+
+    let ws_url = deepgram_realtime_url(config);
+    if std::env::var("DICTATE_REALTIME_DEBUG").is_ok() {
+        eprintln!("[realtime] connecting to {ws_url}");
+    }
+
+    let mut request = ws_url.into_client_request()?;
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Token {}", api_key)
+            .parse()
+            .map_err(|e| anyhow!("Invalid auth header: {}", e))?,
+    );
+    request.headers_mut().insert(
+        "User-Agent",
+        format!("dictate/{} (Deepgram realtime)", env!("CARGO_PKG_VERSION"))
+            .parse()
+            .map_err(|e| anyhow!("Invalid User-Agent: {}", e))?,
+    );
+
+    let (ws_stream, _) = connect_async(request)
+        .await
+        .map_err(|e| anyhow!("Deepgram realtime connect failed: {e}. Check DEEPGRAM_API_KEY."))?;
+    let (mut ws_write, mut ws_read) = ws_stream.split();
+
+    if config.audio_sample_rate != 16000 || config.audio_channels != 1 {
+        eprintln!(
+            "⚠️  Deepgram realtime requires 16kHz mono capture; overriding AUDIO_SAMPLE_RATE/AUDIO_CHANNELS for this mode"
+        );
+    }
+    let mut recorder = AudioRecorder::with_settings(16000, 1, config.audio_buffer_duration_seconds)?;
+    let mut audio_rx = if active_on_start {
+        Some(recorder.start_continuous()?)
+    } else {
+        None
+    };
+    if active_on_start {
+        beep_player.play_async(BeepType::RecordingStart).await.ok();
+    }
+
+    let capture_rate = recorder.capture_sample_rate();
+    let session_buffer = Arc::new(Mutex::new(TranscriptBuffer::new()));
+    let pipe_owned = pipe_command.cloned();
+    let dictation_mode = dictation_mode.to_string();
+    let config = config.clone();
+    let mut preview_tail = String::new();
+    let mut last_audio_time = Instant::now();
+    let mut first_audio_logged = false;
+    // Deepgram closes an idle socket after ~10s of silence; KeepAlive holds a
+    // warm daemon's connection open between dictations.
+    let mut keepalive = tokio::time::interval(Duration::from_secs(8));
+    keepalive.tick().await;
+
+    loop {
+        let audio_fut = async {
+            match audio_rx.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => std::future::pending::<Option<Vec<f32>>>().await,
+            }
+        };
+
+        tokio::select! {
+            _ = control_rx.recv() => {
+                if exit_on_signal {
+                    eprintln!("\n🛑 Realtime mode shutting down...");
+                    ws_write
+                        .send(Message::Text(
+                            serde_json::json!({"type":"CloseStream"}).to_string(),
+                        ))
+                        .await
+                        .ok();
+                    recorder.stop_recording().ok();
+                    drop(audio_rx.take());
+                    beep_player.play_async(BeepType::RecordingStop).await.ok();
+                    break;
+                }
+
+                if audio_rx.is_none() {
+                    match recorder.start_continuous() {
+                        Ok(rx) => {
+                            audio_rx = Some(rx);
+                            beep_player.play_async(BeepType::RecordingStart).await.ok();
+                            eprintln!("🎙️  Recording…");
+                        }
+                        Err(e) => eprintln!("❌ Could not start recording: {e}"),
+                    }
+                } else {
+                    recorder.stop_recording().ok();
+                    drop(audio_rx.take());
+                    beep_player.play_async(BeepType::RecordingStop).await.ok();
+                    eprintln!("⏸️  Stopped; waiting for the next toggle");
+                }
+            }
+            chunk = audio_fut => {
+                match chunk {
+                    Some(chunk) => {
+                        last_audio_time = Instant::now();
+                        let chunk = resample_linear(&chunk, capture_rate, 16000);
+                        if !first_audio_logged {
+                            first_audio_logged = true;
+                            if std::env::var("DICTATE_REALTIME_DEBUG").is_ok() {
+                                eprintln!(
+                                    "[realtime] first audio chunk: {} samples @ {}Hz",
+                                    chunk.len(),
+                                    capture_rate
+                                );
+                            }
+                        }
+                        let pcm = f32_samples_to_pcm_s16le(&chunk);
+                        if let Err(e) = ws_write.send(Message::Binary(pcm)).await {
+                            eprintln!("❌ Deepgram realtime send failed: {e}");
+                            beep_player.play_async(BeepType::Error).await.ok();
+                        }
+                    }
+                    None => audio_rx = None,
+                }
+            }
+            maybe_msg = ws_read.next() => {
+                match maybe_msg {
+                    Some(Ok(Message::Text(text))) => {
+                        let value: serde_json::Value = match serde_json::from_str(&text) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        match value.get("type").and_then(|t| t.as_str()) {
+                            Some("Results") => {
+                                // interim_results is off, so anything with a
+                                // transcript here is already final.
+                                let transcript = value
+                                    .get("channel")
+                                    .and_then(|c| c.get("alternatives"))
+                                    .and_then(|a| a.get(0))
+                                    .and_then(|a| a.get("transcript"))
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or("");
+                                if !transcript.trim().is_empty() {
+                                    handle_realtime_segment(
+                                        transcript,
+                                        &config,
+                                        type_deltas,
+                                        pipe_owned.as_ref(),
+                                        &session_buffer,
+                                        &dictation_mode,
+                                        &beep_player,
+                                        &mut preview_tail,
+                                    )
+                                    .await;
+                                }
+                            }
+                            Some("Metadata") | Some("SpeechStarted") | Some("UtteranceEnd") => {}
+                            _ => {
+                                if let Some(err) = value.get("error").and_then(|e| e.as_str()) {
+                                    eprintln!("❌ Deepgram realtime error: {err}");
+                                }
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Close(frame))) => {
+                        eprintln!("⚠️  Deepgram realtime closed: {frame:?}");
+                        break;
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => {
+                        eprintln!("❌ Deepgram realtime socket error: {e}");
+                        break;
+                    }
+                    None => break,
+                }
+            }
+            _ = keepalive.tick() => {
+                if audio_rx.is_none() || last_audio_time.elapsed() > Duration::from_secs(8) {
+                    ws_write
+                        .send(Message::Text(
+                            serde_json::json!({"type":"KeepAlive"}).to_string(),
+                        ))
+                        .await
+                        .ok();
+                }
+            }
+        }
+    }
+
+    eprintln!("✅ Realtime mode exited");
+    Ok(())
 }
 
 fn resample_linear(samples: &[f32], from_hz: u32, to_hz: u32) -> Vec<f32> {

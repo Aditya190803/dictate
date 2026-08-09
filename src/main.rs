@@ -637,7 +637,7 @@ async fn main() -> Result<()> {
     };
 
     // Mode selection driven by DICTATE_PROFILE (see profile.rs)
-    let use_realtime = config.use_mistral_realtime_stt();
+    let use_realtime = config.use_realtime_stt();
 
     let daemon = args.daemon;
 
@@ -651,14 +651,25 @@ async fn main() -> Result<()> {
         control::spawn_forwarder(Control::start(slot)?, _control_tx, false);
 
         let active_on_start = !args.idle_on_start && config.realtime_daemon_active_on_start();
-        streaming::run_mistral_realtime_daemon(
-            &config,
-            pipe_to,
-            &mut control_rx,
-            &args.dictation_mode,
-            active_on_start,
-        )
-        .await?;
+        if config.use_deepgram_realtime_stt() {
+            streaming::run_deepgram_realtime_daemon(
+                &config,
+                pipe_to,
+                &mut control_rx,
+                &args.dictation_mode,
+                active_on_start,
+            )
+            .await?;
+        } else {
+            streaming::run_mistral_realtime_daemon(
+                &config,
+                pipe_to,
+                &mut control_rx,
+                &args.dictation_mode,
+                active_on_start,
+            )
+            .await?;
+        }
     } else if daemon {
         #[cfg(not(test))]
         run_daemon_clip_mode(&config, &args_with_pipe).await?;

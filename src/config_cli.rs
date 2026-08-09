@@ -633,7 +633,10 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
                 .as_ref()
                 .is_some_and(|k| !k.is_empty())
             {
-                println!("✓ DEEPGRAM_API_KEY is set (model: {})", config.deepgram_model);
+                println!(
+                    "✓ DEEPGRAM_API_KEY is set (model: {})",
+                    config.deepgram_model
+                );
             } else {
                 println!("✗ DEEPGRAM_API_KEY missing (required for Deepgram)");
             }

@@ -165,17 +165,15 @@ impl OnlineTranscriptionProvider {
                     .and_then(|a| a.get("transcript"))
                     .and_then(|t| t.as_str()),
             };
-            return transcript
-                .map(|t| t.to_string())
-                .ok_or_else(|| {
-                    TranscriptionError::ApiError(ApiErrorDetails {
-                        provider: self.options.provider_name.to_string(),
-                        status_code: Some(status.as_u16()),
-                        error_code: None,
-                        error_message: "No text field in response".to_string(),
-                        raw_response: Some(response_text),
-                    })
-                });
+            return transcript.map(|t| t.to_string()).ok_or_else(|| {
+                TranscriptionError::ApiError(ApiErrorDetails {
+                    provider: self.options.provider_name.to_string(),
+                    status_code: Some(status.as_u16()),
+                    error_code: None,
+                    error_message: "No text field in response".to_string(),
+                    raw_response: Some(response_text),
+                })
+            });
         }
 
         let (error_code, error_message) = parse_error_body(&response_text);

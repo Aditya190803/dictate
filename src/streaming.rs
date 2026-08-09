@@ -448,7 +448,8 @@ async fn run_deepgram_realtime_inner(
             "⚠️  Deepgram realtime requires 16kHz mono capture; overriding AUDIO_SAMPLE_RATE/AUDIO_CHANNELS for this mode"
         );
     }
-    let mut recorder = AudioRecorder::with_settings(16000, 1, config.audio_buffer_duration_seconds)?;
+    let mut recorder =
+        AudioRecorder::with_settings(16000, 1, config.audio_buffer_duration_seconds)?;
     let mut audio_rx = if active_on_start {
         Some(recorder.start_continuous()?)
     } else {

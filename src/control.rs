@@ -38,11 +38,16 @@ pub enum Slot {
     Live,
     /// `dictate --daemon --mode smart`
     Smart,
-    /// The Windows hotkey agent (`dictate hotkeys`).
+    /// The Windows hotkey agent (`dictate hotkeys`). Constructed only on Windows —
+    /// Linux uses systemd user services instead of a resident agent.
+    #[cfg_attr(not(windows), allow(dead_code))]
     Hotkeys,
 }
 
 impl Slot {
+    /// Names the Windows control pipe. The unix backend matches on
+    /// `process_pattern` instead, so this is Windows-only in practice.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn as_str(self) -> &'static str {
         match self {
             Slot::Main => "main",

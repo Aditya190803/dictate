@@ -103,6 +103,15 @@ export default function Home() {
     <>
       <a href="#main" className="skip">Skip to content</a>
 
+      {/* Atmosphere: drifting light, then grain over it so the large soft
+          gradients never band. Both are inert to pointers and screen readers. */}
+      <div className="aurora" aria-hidden="true">
+        <span className="a1" />
+        <span className="a2" />
+        <span className="a3" />
+      </div>
+      <div className="grain" aria-hidden="true" />
+
       <nav className="nav" data-stuck={stuck}>
         <div className="nav-inner">
           <Link href="/" className="brand">
@@ -132,34 +141,41 @@ export default function Home() {
       <main id="main">
         {/* ── Hero ── */}
         <header className="hero">
-          <div className="wrap hero-grid">
-            <div>
-              <Reveal as="div">
-                <span className="eyebrow">Speech to text, for people who live in a terminal</span>
-              </Reveal>
+          <div className="gridlines" aria-hidden="true" />
+          <div className="wrap">
+            <Reveal as="div">
+              <span className="eyebrow">Speech to text, for people who live in a terminal</span>
+            </Reveal>
 
-              <Reveal as="h1" delay={70}>
-                Press a key.<br />
-                Talk. The words are <em>already there.</em>
-              </Reveal>
+            {/* Full-bleed headline: at this size it needs the whole measure,
+                and the breaks are authored rather than left to rag. */}
+            <Reveal as="h1" delay={70}>
+              Press a key. Speak.<br />
+              <span className="glow-text">It&rsquo;s already typed.</span>
+            </Reveal>
 
-              <Reveal as="p" className="hero-sub" delay={140}>
-                A daemon-friendly dictation CLI for Wayland Linux and Windows.
-                Realtime transcription lands straight in the focused window —
-                no GUI, no cloud account required, no waiting for a model to load.
-              </Reveal>
+            <div className="hero-grid">
+              <div>
+                <Reveal as="p" className="hero-sub" delay={140}>
+                  A daemon-friendly dictation CLI for Wayland Linux and Windows.
+                  Realtime transcription lands straight in the focused window —
+                  no GUI, no cloud account required, no waiting for a model to load.
+                </Reveal>
 
-              <Reveal as="div" className="hero-meta" delay={210}>
-                <span className="chip"><strong>Rust</strong></span>
-                <span className="chip">Wayland <strong>·</strong> Windows</span>
-                <span className="chip">4 STT providers</span>
-                <span className="chip">GPL-3.0</span>
+                <Reveal as="div" className="hero-meta" delay={210}>
+                  <span className="chip"><strong>Rust</strong></span>
+                  <span className="chip">Wayland <strong>·</strong> Windows</span>
+                  <span className="chip">4 STT providers</span>
+                  <span className="chip">GPL-3.0</span>
+                </Reveal>
+              </div>
+
+              <Reveal delay={260}>
+                <div className="demo-shell">
+                  <HeroDemo />
+                </div>
               </Reveal>
             </div>
-
-            <Reveal delay={260}>
-              <HeroDemo />
-            </Reveal>
           </div>
         </header>
 
@@ -233,7 +249,8 @@ export default function Home() {
               </p>
             </Reveal>
 
-            <Reveal className="matrix-scroll">
+            <Reveal className="matrix-wrap">
+              <div className="matrix-scroll">
               <table className="matrix">
                 <thead>
                   <tr>
@@ -262,6 +279,7 @@ export default function Home() {
                   ))}
                 </tbody>
               </table>
+              </div>
             </Reveal>
 
             <Reveal className="sec-head" delay={80} style={{ marginTop: 68, marginBottom: 30 }}>
@@ -305,23 +323,25 @@ export default function Home() {
 
         {/* ── CTA ── */}
         <section className="sec">
-          <div className="wrap cta">
-            <Reveal as="h2">Stop typing what you could say.</Reveal>
-            <Reveal as="p" delay={70}>
-              Free and GPL-3.0. Bring your own key, or run Whisper locally and
-              bring nothing at all.
-            </Reveal>
-            <Reveal className="cta-cmd" delay={140}>
-              <InstallTabs />
-            </Reveal>
-            <Reveal className="btn-row" delay={200}>
-              <a href={REPO} target="_blank" rel="noopener noreferrer" className="btn primary">
-                Source on GitHub
-              </a>
-              <a href={`${REPO}/releases`} target="_blank" rel="noopener noreferrer" className="btn">
-                Releases
-              </a>
-              <a href="/INSTALL.md" className="btn">Install guide</a>
+          <div className="wrap">
+            <Reveal className="cta-panel">
+              <h2>Stop typing what you could say.</h2>
+              <p>
+                Free and GPL-3.0. Bring your own key, or run Whisper locally and
+                bring nothing at all.
+              </p>
+              <div className="cta-cmd">
+                <InstallTabs />
+              </div>
+              <div className="btn-row">
+                <a href={REPO} target="_blank" rel="noopener noreferrer" className="btn primary">
+                  Source on GitHub
+                </a>
+                <a href={`${REPO}/releases`} target="_blank" rel="noopener noreferrer" className="btn">
+                  Releases
+                </a>
+                <a href="/INSTALL.md" className="btn">Install guide</a>
+              </div>
             </Reveal>
           </div>
         </section>

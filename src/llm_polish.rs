@@ -24,6 +24,18 @@ You are polishing ONE segment of ongoing dictation. Prior context was already in
 "#;
 
 const DEFAULT_OLLAMA_POLISH_MODEL: &str = "gemma-4";
+const DEFAULT_OPENCODE_POLISH_MODEL: &str = "big-pickle";
+const DEFAULT_OPENCODE_BASE_URL: &str = "https://opencode.ai/zen/v1";
+/// Legacy default carried in older `text.toml` files; treated as "unset" so the
+/// OpenCode backend picks `big-pickle` instead of forwarding a Mistral model id.
+const LEGACY_MISTRAL_POLISH_MODEL: &str = "mistral-small-latest";
+
+/// `big-pickle` is a reasoning model: tokens spent on `reasoning_content` are billed
+/// against `max_tokens`. A polish call sized for a plain chat model (a few hundred
+/// tokens, enough for one rewritten paragraph) gets consumed entirely by reasoning and
+/// returns empty content, so raise any smaller budget to a floor that leaves room for
+/// both. Verified: max_tokens=40 produced 37 reasoning tokens and a truncated reply.
+const OPENCODE_MIN_MAX_TOKENS: u32 = 2048;
 
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
@@ -154,6 +166,14 @@ fn polish_model_for_backend(
 ) -> String {
     let configured = polish.model.trim();
     match backend {
+        PolishBackend::OpenCode => {
+            if configured.is_empty() || configured.eq_ignore_ascii_case(LEGACY_MISTRAL_POLISH_MODEL)
+            {
+                DEFAULT_OPENCODE_POLISH_MODEL.to_string()
+            } else {
+                configured.to_string()
+            }
+        }
         PolishBackend::Mistral => {
             if configured.is_empty() {
                 "mistral-small-latest".to_string()
@@ -162,9 +182,12 @@ fn polish_model_for_backend(
             }
         }
         PolishBackend::Ollama => {
-            let mistral_api_default =
-                configured.is_empty() || configured.eq_ignore_ascii_case("mistral-small-latest");
-            if mistral_api_default {
+            // Both the current default (`big-pickle`) and the legacy Mistral one are
+            // hosted-API model ids that Ollama cannot serve — treat them as "unset".
+            let hosted_api_default = configured.is_empty()
+                || configured.eq_ignore_ascii_case(LEGACY_MISTRAL_POLISH_MODEL)
+                || configured.eq_ignore_ascii_case(DEFAULT_OPENCODE_POLISH_MODEL);
+            if hosted_api_default {
                 std::env::var("OLLAMA_POLISH_MODEL")
                     .unwrap_or_else(|_| DEFAULT_OLLAMA_POLISH_MODEL.to_string())
             } else {
@@ -198,6 +221,9 @@ async fn run_polish_chat(
         }
 
         let result = match backend {
+            PolishBackend::OpenCode => {
+                run_opencode_chat(&client, user_body, system, config, polish, &model).await
+            }
             PolishBackend::Mistral => {
                 run_mistral_chat(&client, user_body, system, config, polish, &model).await
             }
@@ -218,6 +244,9 @@ async fn run_polish_chat(
 fn polish_unavailable_error(config: &Config) -> anyhow::Error {
     let mode = config.polish_provider.trim().to_lowercase();
     match mode.as_str() {
+        "opencode" | "zen" | "big-pickle" => anyhow!(
+            "POLISH_PROVIDER=opencode but OPENCODE_API_KEY is missing (set key or use POLISH_PROVIDER=ollama)"
+        ),
         "mistral" => anyhow!(
             "POLISH_PROVIDER=mistral but MISTRAL_API_KEY is missing (set key or use POLISH_PROVIDER=ollama)"
         ),
@@ -225,9 +254,76 @@ fn polish_unavailable_error(config: &Config) -> anyhow::Error {
             "Polish via Ollama failed — is Ollama running? (ollama serve). Set OLLAMA_BASE_URL / OLLAMA_POLISH_MODEL if needed."
         ),
         _ => anyhow!(
-            "No polish backend: set MISTRAL_API_KEY or run Ollama locally (POLISH_PROVIDER=auto|ollama)"
+            "No polish backend: set OPENCODE_API_KEY or run Ollama locally (POLISH_PROVIDER=auto|opencode|ollama)"
         ),
     }
+}
+
+/// Token budget to send to OpenCode Zen, floored so reasoning tokens cannot starve
+/// the visible answer. See [`OPENCODE_MIN_MAX_TOKENS`].
+fn opencode_max_tokens(configured: u32) -> u32 {
+    configured.max(OPENCODE_MIN_MAX_TOKENS)
+}
+
+/// OpenCode Zen (`big-pickle`) — OpenAI-compatible chat completions, text only.
+///
+/// Deliberately reads `choices[].message.content` and nothing else: the model also
+/// returns `reasoning_content`, which is its scratchpad and must never be inserted
+/// into the user's focused application.
+async fn run_opencode_chat(
+    client: &reqwest::Client,
+    user_body: &str,
+    system: &str,
+    config: &Config,
+    polish: &PolishConfig,
+    model: &str,
+) -> Result<String> {
+    let api_key = config
+        .opencode_api_key
+        .as_ref()
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| anyhow!("OPENCODE_API_KEY required for polish"))?;
+
+    let base = config
+        .opencode_base_url
+        .clone()
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_OPENCODE_BASE_URL.to_string());
+
+    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
+
+    let body = serde_json::json!({
+        "model": model,
+        "temperature": polish.temperature,
+        "max_tokens": opencode_max_tokens(polish.max_tokens),
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_body}
+        ]
+    });
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&body)
+        .send()
+        .await?;
+
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(anyhow!("OpenCode Zen chat HTTP {status}: {text}"));
+    }
+    let parsed: ChatResponse =
+        serde_json::from_str(&text).map_err(|e| anyhow!("Invalid chat response: {e}"))?;
+    parsed
+        .choices
+        .first()
+        .map(|c| c.message.content.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow!("Empty polish response from OpenCode Zen (raise [polish] max_tokens — reasoning tokens count against it)")
+        })
 }
 
 async fn run_mistral_chat(
@@ -384,8 +480,54 @@ mod tests {
     #[test]
     fn ollama_model_when_polish_model_is_mistral_default() {
         let config = Config::default();
+        let polish = PolishConfig {
+            model: LEGACY_MISTRAL_POLISH_MODEL.to_string(),
+            ..PolishConfig::default()
+        };
+        let m = polish_model_for_backend(&config, &polish, PolishBackend::Ollama);
+        assert_eq!(m, DEFAULT_OLLAMA_POLISH_MODEL);
+    }
+
+    #[test]
+    fn ollama_model_when_polish_model_is_opencode_default() {
+        let config = Config::default();
         let polish = PolishConfig::default();
         let m = polish_model_for_backend(&config, &polish, PolishBackend::Ollama);
         assert_eq!(m, DEFAULT_OLLAMA_POLISH_MODEL);
+    }
+
+    #[test]
+    fn opencode_uses_big_pickle_for_legacy_mistral_model() {
+        let config = Config::default();
+        let polish = PolishConfig {
+            model: LEGACY_MISTRAL_POLISH_MODEL.to_string(),
+            ..PolishConfig::default()
+        };
+        let m = polish_model_for_backend(&config, &polish, PolishBackend::OpenCode);
+        assert_eq!(m, DEFAULT_OPENCODE_POLISH_MODEL);
+    }
+
+    #[test]
+    fn opencode_respects_explicit_model_override() {
+        let config = Config::default();
+        let polish = PolishConfig {
+            model: "some-other-model".to_string(),
+            ..PolishConfig::default()
+        };
+        let m = polish_model_for_backend(&config, &polish, PolishBackend::OpenCode);
+        assert_eq!(m, "some-other-model");
+    }
+
+    /// Reasoning tokens count against max_tokens, so small budgets must be raised.
+    #[test]
+    fn opencode_max_tokens_floors_small_budgets() {
+        assert_eq!(opencode_max_tokens(40), OPENCODE_MIN_MAX_TOKENS);
+        assert_eq!(opencode_max_tokens(512), OPENCODE_MIN_MAX_TOKENS);
+        assert_eq!(opencode_max_tokens(0), OPENCODE_MIN_MAX_TOKENS);
+    }
+
+    #[test]
+    fn opencode_max_tokens_preserves_large_budgets() {
+        assert_eq!(opencode_max_tokens(8192), 8192);
     }
 }

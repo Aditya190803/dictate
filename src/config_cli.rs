@@ -221,6 +221,8 @@ fn normalize_config_key(key: &str) -> String {
         "retries" | "max_retries" | "transcription_max_retries" => "TRANSCRIPTION_MAX_RETRIES",
         "mistral_key" | "mistral_api_key" => "MISTRAL_API_KEY",
         "polish_provider" | "polish-provider" => "POLISH_PROVIDER",
+        "opencode_key" | "opencode_api_key" => "OPENCODE_API_KEY",
+        "opencode_base_url" | "opencode-base-url" => "OPENCODE_BASE_URL",
         "ollama_base_url" | "ollama-base-url" => "OLLAMA_BASE_URL",
         "ollama_api_key" | "ollama-api-key" => "OLLAMA_API_KEY",
         "ollama_polish_model" | "ollama-polish-model" => "OLLAMA_POLISH_MODEL",
@@ -522,6 +524,16 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
     }
     if config.profile.uses_segment_polish() || config.profile.uses_llm_polish() {
         match config.resolve_polish_backend() {
+            Some(crate::config::PolishBackend::OpenCode) => {
+                let model = if config.text_processing.polish.model.trim().is_empty()
+                    || config.text_processing.polish.model.contains("mistral")
+                {
+                    "big-pickle".to_string()
+                } else {
+                    config.text_processing.polish.model.clone()
+                };
+                println!("✓ LLM polish: OpenCode Zen (model: {model}, [polish] in text.toml)");
+            }
             Some(crate::config::PolishBackend::Mistral) => {
                 println!("✓ LLM polish: Mistral chat ([polish] in text.toml)");
             }
@@ -539,7 +551,7 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
                 );
             }
             None => println!(
-                "  LLM polish off — set MISTRAL_API_KEY or run Ollama (POLISH_PROVIDER=auto|ollama)"
+                "  LLM polish off — set OPENCODE_API_KEY or run Ollama (POLISH_PROVIDER=auto|opencode|ollama)"
             ),
         }
     }

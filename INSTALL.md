@@ -320,20 +320,23 @@ dictate config edit
 
 ### Polish & `text.toml`
 
-Default **`segmented`** dictation polishes **each pause-bound segment** with Mistral chat when `MISTRAL_API_KEY` is set. Without a key, segments still get local dictionary/snippets/cleanup and context edits.
+Default **`segmented`** dictation polishes **each pause-bound segment** with **OpenCode Zen** (`big-pickle`) when `OPENCODE_API_KEY` is set. Without a key, segments still get local dictionary/snippets/cleanup and context edits.
 
 Create `~/.config/dictate/text.toml` (optional):
 
 ```toml
 [polish]
 enabled = true
-model = "mistral-small-latest"
+model = "big-pickle"
+max_tokens = 2048
 on_failure = "fallback"   # fallback = insert locally cleaned text; error = insert nothing
 
 # Same file can hold dictionary, snippets, cleanup — see README
 ```
 
-Uses the same **`MISTRAL_API_KEY`** as speech-to-text. If polish fails after retries, `on_failure=fallback` pastes the locally processed transcript and prints a warning.
+Polish uses **`OPENCODE_API_KEY`**, which is separate from the `MISTRAL_API_KEY` used for speech-to-text — OpenCode Zen is text-only and cannot transcribe audio. If polish fails after retries, `on_failure=fallback` pastes the locally processed transcript and prints a warning.
+
+> `big-pickle` is a **reasoning** model: tokens it spends reasoning count against `max_tokens`. A budget under ~1024 gets consumed before any visible text is produced, so dictate raises anything below **2048** to 2048 automatically. Only the assistant `content` is inserted; the model's `reasoning_content` is never shown.
 
 ### Using a Custom Config Path
 

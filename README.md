@@ -45,7 +45,7 @@ Default **segmented** dictation (`DICTATE_PROFILE=segmented` or `dictate --daemo
 ## Features
 
 - **STT:** Mistral (default), Groq, or local Whisper (`--features local`)
-- **Polish:** Independent of STT — `POLISH_PROVIDER=auto` uses Mistral if `MISTRAL_API_KEY` is set, else **Ollama** (`ollama pull gemma-4`). Groq/local STT + Ollama polish works.
+- **Polish:** Independent of STT — `POLISH_PROVIDER=auto` uses **OpenCode Zen** (`big-pickle`) if `OPENCODE_API_KEY` is set, else Mistral if `MISTRAL_API_KEY` is set, else **Ollama** (`ollama pull gemma-4`). Groq/local STT + Ollama polish works.
 - **Dictionary:** `dictate words` — GUI for names, jargon, and misspelling fixes (`words-ui` build)
 - **text.toml:** Dictionary, snippets, cleanup, `[polish]` style/model, command mode
 - **Extras:** `dictate history`, `dictate scratchpad`, clipboard-aware command mode
@@ -62,7 +62,8 @@ DICTATE_PROFILE=segmented          # or live_typing, smart_paste, batch_clip
 SHORTCUT_OUTPUT=type
 SHORTCUT_KEY_LIVE=SUPER,R
 SHORTCUT_KEY_SMART=SUPER,SHIFT,R
-POLISH_PROVIDER=auto               # auto | mistral | ollama
+POLISH_PROVIDER=auto               # auto | opencode | mistral | ollama
+OPENCODE_API_KEY=...               # text polish only — OpenCode Zen does not do STT
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_POLISH_MODEL=gemma-4
 ```

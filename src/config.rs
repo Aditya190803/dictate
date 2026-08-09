@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 /// Chat backend for transcript polish (not the STT provider).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolishBackend {
+    /// OpenCode Zen (OpenAI-compatible, `big-pickle`). Text-only — never used for STT.
+    OpenCode,
     Mistral,
     Ollama,
 }
@@ -68,10 +70,14 @@ pub struct Config {
     pub context_editing: bool,
     pub context_editing_max_delete_chars: usize,
     pub context_editing_max_delete_words: usize,
-    /// LLM for polish / command-mode fallback: `auto`, `mistral`, or `ollama`.
+    /// LLM for polish / command-mode fallback: `auto`, `opencode`, `mistral`, or `ollama`.
     pub polish_provider: String,
     pub ollama_base_url: String,
     pub ollama_api_key: Option<String>,
+    /// OpenCode Zen key for text polish only. Separate from `mistral_api_key`, which
+    /// stays the speech-to-text credential — OpenCode Zen cannot do transcription.
+    pub opencode_api_key: Option<String>,
+    pub opencode_base_url: Option<String>,
 }
 
 impl Default for Config {
@@ -111,6 +117,8 @@ impl Default for Config {
             polish_provider: "auto".to_string(),
             ollama_base_url: "http://127.0.0.1:11434".to_string(),
             ollama_api_key: None,
+            opencode_api_key: None,
+            opencode_base_url: None,
         }
     }
 }
@@ -217,6 +225,8 @@ impl Config {
             polish_provider: env_str_or("POLISH_PROVIDER", "auto"),
             ollama_base_url: env_str_or("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
             ollama_api_key: std::env::var("OLLAMA_API_KEY").ok(),
+            opencode_api_key: std::env::var("OPENCODE_API_KEY").ok(),
+            opencode_base_url: std::env::var("OPENCODE_BASE_URL").ok(),
         }
     }
 
@@ -235,11 +245,26 @@ impl Config {
         self.resolve_polish_backend().is_some()
     }
 
-    /// `auto`: Mistral if key set, else Ollama. Explicit `mistral` / `ollama` require that backend.
+    /// `auto`: OpenCode Zen if its key is set, else Mistral if its key is set, else Ollama.
+    /// Explicit `opencode` / `mistral` / `ollama` require that backend.
+    ///
+    /// This only ever picks a *polish* (text) backend. STT provider selection is
+    /// independent and still driven by `transcription_provider`.
     pub fn resolve_polish_backend(&self) -> Option<PolishBackend> {
         let mode = self.polish_provider.trim().to_lowercase();
+        let opencode = self
+            .opencode_api_key
+            .as_ref()
+            .is_some_and(|k| !k.trim().is_empty());
         let mistral = self.mistral_api_key.as_ref().is_some_and(|k| !k.is_empty());
         match mode.as_str() {
+            "opencode" | "zen" | "big-pickle" => {
+                if opencode {
+                    Some(PolishBackend::OpenCode)
+                } else {
+                    None
+                }
+            }
             "mistral" => {
                 if mistral {
                     Some(PolishBackend::Mistral)
@@ -249,7 +274,9 @@ impl Config {
             }
             "ollama" => Some(PolishBackend::Ollama),
             "auto" | "" => {
-                if mistral {
+                if opencode {
+                    Some(PolishBackend::OpenCode)
+                } else if mistral {
                     Some(PolishBackend::Mistral)
                 } else {
                     Some(PolishBackend::Ollama)
@@ -619,6 +646,32 @@ mod tests {
             config.resolve_polish_backend(),
             Some(PolishBackend::Mistral)
         );
+    }
+
+    #[test]
+    fn polish_auto_prefers_opencode_over_mistral() {
+        let config = Config {
+            opencode_api_key: Some("k".to_string()),
+            mistral_api_key: Some("k".to_string()),
+            polish_provider: "auto".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.resolve_polish_backend(),
+            Some(PolishBackend::OpenCode)
+        );
+    }
+
+    /// An OpenCode key must never be mistaken for an STT credential.
+    #[test]
+    fn opencode_key_alone_does_not_enable_mistral_polish() {
+        let config = Config {
+            opencode_api_key: Some("k".to_string()),
+            mistral_api_key: None,
+            polish_provider: "mistral".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(config.resolve_polish_backend(), None);
     }
 
     #[test]

@@ -102,7 +102,7 @@ fn default_polish_enabled() -> bool {
     true
 }
 fn default_polish_model() -> String {
-    "mistral-small-latest".to_string()
+    "big-pickle".to_string()
 }
 fn default_polish_temperature() -> f32 {
     0.2

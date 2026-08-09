@@ -11,8 +11,23 @@ env:
 
 jobs:
   check:
-    name: Check & Test
-    runs-on: ubuntu-latest
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux (gnu)
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          # Primary Windows target: no Visual Studio required.
+          - name: Windows (gnu)
+            os: windows-latest
+            target: x86_64-pc-windows-gnu
+          - name: Windows (msvc)
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
 
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +35,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: actions/cache@v5
@@ -28,34 +44,45 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
 
+      # Windows needs no system packages: audio goes through WASAPI and TLS
+      # through SChannel, both provided by windows-sys / native-tls.
       - name: Install system deps
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config libgtk-4-dev \
-            meson ninja-build libwayland-dev wayland-protocols \
-            gobject-introspection libgirepository-2.0-dev
-          # gtk4-layer-shell is not in Ubuntu 24.04 (ubuntu-latest); build from source when missing.
-          if apt-cache show gtk4-layer-shell &>/dev/null; then
-            sudo apt-get install -y gtk4-layer-shell
-          else
-            git clone --depth 1 --branch v1.3.0 https://github.com/wmww/gtk4-layer-shell.git /tmp/gtk4-layer-shell
-            meson setup /tmp/gtk4-layer-shell/build /tmp/gtk4-layer-shell \
-              -Dexamples=false -Ddocs=false -Dtests=false -Dintrospection=false -Dvapi=false
-            sudo meson compile -C /tmp/gtk4-layer-shell/build
-            sudo meson install -C /tmp/gtk4-layer-shell/build
-            sudo ldconfig
-            pkg-config --exists gtk4-layer-shell-0
-          fi
+          sudo apt-get install -y libasound2-dev pkg-config \
+            libgtk-4-dev cmake clang libclang-dev
+
+      # The gnu target builds raw-dylib import libraries with dlltool, which
+      # shells out to `as`. rustup ships neither, so use the runner's MinGW.
+      - name: Add MinGW to PATH
+        if: matrix.target == 'x86_64-pc-windows-gnu'
+        run: echo "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --features overlay -- -D warnings
+        run: cargo clippy --all-targets --target ${{ matrix.target }} -- -D warnings
+
+      - name: Build
+        run: cargo build --verbose --target ${{ matrix.target }}
 
       - name: Run tests
-        run: cargo test --verbose --features overlay
+        run: cargo test --verbose --target ${{ matrix.target }}
         env:
           RUST_TEST_THREADS: 1
+
+      # Optional features are Linux-only: words-ui needs GTK4, local needs
+      # whisper-rs (cmake + clang). Neither is supported on Windows.
+      - name: Clippy (words-ui)
+        if: runner.os == 'Linux'
+        run: cargo clippy --all-targets --features words-ui --target ${{ matrix.target }} -- -D warnings
+
+      - name: Build (local)
+        if: runner.os == 'Linux'
+        run: cargo build --verbose --features local --target ${{ matrix.target }}

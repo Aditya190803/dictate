@@ -34,7 +34,7 @@ impl DictateMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DictateProfile {
-    /// Default: pause-bound segments, session context, per-segment polish (Mistral realtime or VAD).
+    /// Default: pause-bound segments, session context, per-segment polish (realtime WebSocket or VAD).
     #[default]
     Segmented,
     /// Legacy: raw Mistral realtime deltas.
@@ -84,7 +84,7 @@ impl DictateProfile {
             Self::Segmented => {
                 "Speak in phrases; polished text inserts after each pause with voice corrections."
             }
-            Self::LiveTyping => "Words appear as you speak (Mistral realtime).",
+            Self::LiveTyping => "Words appear as you speak (Mistral or Deepgram realtime).",
             Self::SmartPaste => "Speak, stop, get polished text pasted once (daemon).",
             Self::BatchClip => "Record, stop, transcribe once with local cleanup only.",
             Self::Command => "Speak an instruction; applies to clipboard text (e.g. fix grammar).",

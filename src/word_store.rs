@@ -87,8 +87,7 @@ impl WordBook {
             .iter()
             .any(|w| w.eq_ignore_ascii_case(word))
         {
-            self.starred_words
-                .retain(|w| !w.eq_ignore_ascii_case(word));
+            self.starred_words.retain(|w| !w.eq_ignore_ascii_case(word));
         } else {
             self.starred_words.push(word.to_string());
             self.starred_words.sort_by_key(|s| s.to_lowercase());
@@ -136,7 +135,12 @@ impl WordBook {
         }
     }
 
-    pub fn upsert_row(&mut self, word: &str, misspelling: Option<&str>, previous_word: Option<&str>) {
+    pub fn upsert_row(
+        &mut self,
+        word: &str,
+        misspelling: Option<&str>,
+        previous_word: Option<&str>,
+    ) {
         let word = word.trim();
         if let Some(prev) = previous_word.map(str::trim).filter(|s| !s.is_empty()) {
             if !prev.eq_ignore_ascii_case(word) {
@@ -322,9 +326,6 @@ style = "concise"
         book.set_misspelling("Draft", Some("Draught"));
         book.set_misspelling("Draft", Some("Draf"));
         assert_eq!(book.dictionary.len(), 1);
-        assert_eq!(
-            book.dictionary.get("Draf"),
-            Some(&"Draft".to_string())
-        );
+        assert_eq!(book.dictionary.get("Draf"), Some(&"Draft".to_string()));
     }
 }

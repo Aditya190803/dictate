@@ -61,9 +61,9 @@ pub fn open_in_editor() -> Result<()> {
     if !path.exists() {
         File::create(&path)?;
     }
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+    let editor = crate::platform::default_editor();
     let mut parts = editor.split_whitespace();
-    let program = parts.next().unwrap_or("nano");
+    let program = parts.next().unwrap_or("vi");
     let status = Command::new(program).args(parts).arg(&path).status();
     match status {
         Ok(s) if s.success() => Ok(()),

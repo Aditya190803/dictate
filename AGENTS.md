@@ -37,6 +37,27 @@ dictate doctor
 - **Live typing:** `dictate --daemon --mode live` (or shortcut that starts daemon + SIGUSR1 toggle).
 - **Dictionary GUI:** `dictate words` (requires `words-ui` build).
 
+## Windows
+
+Supported target; **not** a fork — one binary, `#[cfg]` split. Guide: [`docs/windows.md`](docs/windows.md).
+
+| Concern | Linux | Windows |
+|---------|-------|---------|
+| Output sinks (`type`/`paste`/`clipboard`) | `ydotool`, `wl-copy` subprocesses | in-process Win32 `SendInput` / clipboard |
+| Daemon toggle | `SIGUSR1` | named pipe `\\.\pipe\dictate-{live,smart,main}` |
+| Global shortcuts | compositor binds | `dictate hotkeys` agent (`RegisterHotKey`) |
+| Autostart | systemd user units | `HKCU\...\CurrentVersion\Run` + `%APPDATA%\dictate\hotkey-agent.vbs` |
+| Config dir | `~/.config/dictate` | `%APPDATA%\dictate` |
+| TLS | rustls + ring | SChannel via `native-tls` (keep it — `ring` needs a C compiler) |
+
+Code: `src/platform/` (`mod.rs` routes in-process sinks via the `@dictate` pseudo-command; `unix.rs` vs `windows/{input,clipboard,hotkeys,autostart}.rs`) and `src/control.rs` (toggle transport).
+
+Not built on Windows: `words-ui` (GTK4) and `local` (whisper-rs).
+
+**No C compiler is needed** — that is why the Windows TLS backend is SChannel, not `ring`. A linker still is: `x86_64-pc-windows-msvc` uses the VS Build Tools, and `x86_64-pc-windows-gnu` needs MinGW-w64 binutils on `PATH` (`dlltool` + `as`, for the `raw-dylib` import libraries tokio and `windows-sys` generate). rustup's bundled `dlltool` is **not** sufficient — it shells out to `as`, which rustup does not ship.
+
+Default `SUPER,R` cannot register on Windows (`Win+R` is the Run dialog); use `CTRL,ALT,R` / `CTRL,ALT,SHIFT,R`.
+
 ## Optional
 
 - `~/.config/dictate/text.toml` — dictionary, snippets, cleanup, `[polish]` for smart_paste.

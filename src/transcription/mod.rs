@@ -117,6 +117,7 @@ impl TranscriptionFactory {
                         .clone()
                         .unwrap_or_else(|| "https://api.mistral.ai/v1".to_string()),
                     auth_style: online::AuthStyle::Bearer,
+                    dialect: online::ApiDialect::OpenAiCompatible,
                 })
             }
             "groq" => {
@@ -135,6 +136,28 @@ impl TranscriptionFactory {
                         .clone()
                         .unwrap_or_else(|| "https://api.groq.com/openai/v1".to_string()),
                     auth_style: online::AuthStyle::Bearer,
+                    dialect: online::ApiDialect::OpenAiCompatible,
+                })
+            }
+            "deepgram" => {
+                let api_key = config.deepgram_api_key.clone().ok_or_else(|| {
+                    TranscriptionError::ConfigurationError("Deepgram API key not found".to_string())
+                })?;
+
+                Ok(online::OnlineProviderOptions {
+                    provider_name: "Deepgram",
+                    api_key,
+                    timeout_seconds: config.transcription_timeout_seconds,
+                    max_retries: config.transcription_max_retries,
+                    model: config.deepgram_model.clone(),
+                    // Deepgram is not versioned in the base path; `/v1/listen` is
+                    // appended by the Deepgram dialect.
+                    base_url: config
+                        .deepgram_base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.deepgram.com".to_string()),
+                    auth_style: online::AuthStyle::Token,
+                    dialect: online::ApiDialect::Deepgram,
                 })
             }
             _ => Err(TranscriptionError::UnsupportedProvider(
@@ -149,7 +172,7 @@ impl TranscriptionFactory {
         config: &crate::config::Config,
     ) -> Result<Box<dyn TranscriptionProvider>, TranscriptionError> {
         match provider_type.to_lowercase().as_str() {
-            "mistral" | "groq" => {
+            "mistral" | "groq" | "deepgram" => {
                 let provider = online::OnlineTranscriptionProvider::new(
                     Self::create_online_options(provider_type, config)?,
                 )?;

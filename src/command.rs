@@ -1,3 +1,4 @@
+use crate::platform;
 use anyhow::{anyhow, Result};
 use log::debug;
 use std::process::Stdio;
@@ -9,6 +10,10 @@ use tokio::process::Command;
 pub async fn execute_capture(command_args: &[String]) -> Result<String> {
     if command_args.is_empty() {
         return Err(anyhow!("No command provided"));
+    }
+
+    if platform::is_internal(command_args) {
+        return platform::capture_internal(&command_args[1..]).await;
     }
 
     let output = tokio::time::timeout(
@@ -36,6 +41,11 @@ pub async fn execute_capture(command_args: &[String]) -> Result<String> {
 pub async fn execute_with_input(command_args: &[String], input: &str) -> Result<i32> {
     if command_args.is_empty() {
         return Err(anyhow!("No command provided"));
+    }
+
+    if platform::is_internal(command_args) {
+        debug!("Internal sink: {:?}", &command_args[1..]);
+        return platform::run_internal_sink(&command_args[1..], input).await;
     }
 
     let command_name = &command_args[0];
@@ -85,25 +95,48 @@ mod tests {
     use super::*;
     use crate::test_utils::ENV_MUTEX;
 
+    /// Command that writes `text` to stdout. Trailing newlines vary by shell,
+    /// so callers compare trimmed output.
+    fn echo(text: &str) -> Vec<String> {
+        #[cfg(unix)]
+        return vec!["printf".to_string(), text.to_string()];
+        #[cfg(windows)]
+        return vec!["cmd".to_string(), "/c".to_string(), format!("echo {text}")];
+    }
+
+    /// Command that exits non-zero.
+    fn fails() -> Vec<String> {
+        #[cfg(unix)]
+        return vec!["sh".to_string(), "-c".to_string(), "exit 1".to_string()];
+        #[cfg(windows)]
+        return vec!["cmd".to_string(), "/c".to_string(), "exit 1".to_string()];
+    }
+
+    /// Command that reads stdin to EOF and succeeds.
+    fn consumes_stdin() -> Vec<String> {
+        #[cfg(unix)]
+        return vec!["cat".to_string()];
+        #[cfg(windows)]
+        return vec!["cmd".to_string(), "/c".to_string(), "sort".to_string()];
+    }
+
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_execute_capture_success() {
         let _lock = ENV_MUTEX.lock().await;
-        let command_args = vec!["printf".to_string(), "hello".to_string()];
 
-        let result = execute_capture(&command_args).await;
+        let result = execute_capture(&echo("hello")).await;
 
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "hello");
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(result.unwrap().trim(), "hello");
     }
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_execute_capture_failure() {
         let _lock = ENV_MUTEX.lock().await;
-        let command_args = vec!["false".to_string()];
 
-        let result = execute_capture(&command_args).await;
+        let result = execute_capture(&fails()).await;
 
         assert!(result.is_err());
     }
@@ -113,14 +146,9 @@ mod tests {
     async fn test_execute_with_input_success() {
         let _lock = ENV_MUTEX.lock().await;
 
-        // Test with 'cat' command which should echo input to stdout
-        let command_args = vec!["cat".to_string()];
-        let input = "Hello, World!";
+        let result = execute_with_input(&consumes_stdin(), "Hello, World!").await;
 
-        let result = execute_with_input(&command_args, input).await;
-
-        // cat should succeed with exit code 0
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "{result:?}");
         assert_eq!(result.unwrap(), 0);
     }
 
@@ -160,41 +188,38 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
-    async fn test_execute_with_input_command_with_args() {
-        let _lock = ENV_MUTEX.lock().await;
-
-        // Test with 'head -n 1' to demonstrate argument handling
-        let command_args = vec!["head".to_string(), "-n".to_string(), "1".to_string()];
-        let input = "line1\nline2\nline3";
-
-        let result = execute_with_input(&command_args, input).await;
-
-        // head should succeed with exit code 0
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 0);
-    }
-
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn test_execute_with_input_command_failure() {
         let _lock = ENV_MUTEX.lock().await;
 
-        // Test with a command that reads stdin and exits with code 1
-        let command_args = vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            "cat > /dev/null; exit 1".to_string(),
-        ];
-        let input = "test";
+        let result = execute_with_input(&fails(), "test").await;
 
-        let result = execute_with_input(&command_args, input).await;
-
-        // Command should execute but return exit code 1
+        // The command runs; only its exit status reports the failure.
         assert!(
             result.is_ok(),
             "Command should execute successfully: {:?}",
             result
         );
         assert_eq!(result.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn internal_sinks_are_not_spawned_as_processes() {
+        let _lock = ENV_MUTEX.lock().await;
+
+        // `@dictate` never exists on PATH, so reaching a spawn would report
+        // "Failed to execute command" instead of an unknown-sink error.
+        let sink = vec![
+            crate::platform::INTERNAL_CMD.to_string(),
+            "definitely-not-a-sink".to_string(),
+        ];
+
+        let error = execute_with_input(&sink, "text")
+            .await
+            .expect_err("unknown sink should fail");
+        assert!(
+            !error.to_string().contains("Failed to execute command"),
+            "internal sink leaked to process spawning: {error}"
+        );
     }
 }

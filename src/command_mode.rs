@@ -60,9 +60,10 @@ async fn read_clipboard(config: &CommandModeConfig) -> Result<String> {
     let command_args = config.clipboard_command_or_default();
     command::execute_capture(&command_args).await.map_err(|e| {
         anyhow!(
-            "Failed to read clipboard using {:?}: {}. Install wl-clipboard or configure [command_mode].clipboard_command in text.toml.",
+            "Failed to read clipboard using {:?}: {}. {}",
             command_args,
-            e
+            e,
+            crate::platform::CLIPBOARD_HINT
         )
     })
 }

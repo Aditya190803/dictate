@@ -2,15 +2,22 @@
 
 use crate::config::Config;
 use crate::config_cli::{
-    ensure_config_file, install_gnome_shortcuts, print_shortcut, read_config_value,
-    run_autostart_command, run_doctor, set_config_value, AutostartCommand, ShortcutArgs,
-    ShortcutDesktop, ShortcutMode,
+    default_shortcut_keys, ensure_config_file, install_gnome_shortcuts, print_shortcut,
+    read_config_value, run_autostart_command, run_doctor, set_config_value, AutostartCommand,
+    ShortcutArgs, ShortcutDesktop, ShortcutMode,
 };
 use anyhow::Result;
 use inquire::{Confirm, Select, Text};
+#[cfg(unix)]
 use std::env;
 use std::path::Path;
 
+#[cfg(windows)]
+fn detect_desktop() -> &'static str {
+    "windows"
+}
+
+#[cfg(unix)]
 fn detect_desktop() -> &'static str {
     let session = env::var("XDG_SESSION_TYPE").unwrap_or_default();
     if session != "wayland" && !session.is_empty() {
@@ -40,9 +47,25 @@ fn parse_shortcut_desktop(s: &str) -> ShortcutDesktop {
         "kde" => ShortcutDesktop::Kde,
         "sway" => ShortcutDesktop::Sway,
         "niri" => ShortcutDesktop::Niri,
+        "windows" => ShortcutDesktop::Windows,
         "other" => ShortcutDesktop::Other,
         _ => ShortcutDesktop::Hyprland,
     }
+}
+
+/// Desktops offered by the setup wizard, most likely first.
+fn desktop_choices() -> Vec<String> {
+    #[cfg(windows)]
+    return vec!["windows".into(), "other".into()];
+    #[cfg(unix)]
+    return vec![
+        "hyprland".into(),
+        "niri".into(),
+        "gnome".into(),
+        "kde".into(),
+        "sway".into(),
+        "other".into(),
+    ];
 }
 
 pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
@@ -73,26 +96,28 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
         }
     }
 
-    // SUPER,R = live realtime typing; SUPER+SHIFT+R = smart paste (INSTALL.md default).
+    // First shortcut = live realtime typing, second = smart paste (INSTALL.md
+    // default). The actual combos come from default_shortcut_keys() per platform.
     set_config_value(&path, "profile", "segmented")?;
     set_config_value(&path, "batch-mode", "false")?;
     set_config_value(&path, "transcription-mode", "auto")?;
     set_config_value(&path, "language", "auto")?;
     set_config_value(&path, "shortcut-output", "type")?;
 
+    let (default_live, default_smart) = default_shortcut_keys();
     let live_key = if quick {
-        "SUPER,R".to_string()
+        default_live.to_string()
     } else {
         Text::new("Live typing shortcut (words as you speak)")
-            .with_default("SUPER,R")
-            .with_help_message("Example: SUPER,R or SUPER,SHIFT,R")
+            .with_default(default_live)
+            .with_help_message("Example: CTRL,ALT,R or SUPER,SHIFT,R")
             .prompt()?
     };
     let smart_key = if quick {
-        "SUPER,SHIFT,R".to_string()
+        default_smart.to_string()
     } else {
         Text::new("Smart paste shortcut (polish when you stop)")
-            .with_default("SUPER,SHIFT,R")
+            .with_default(default_smart)
             .prompt()?
     };
     set_config_value(&path, "shortcut-key-live", live_key.trim())?;
@@ -102,25 +127,11 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
     let desktop = if quick {
         detected.to_string()
     } else {
-        Select::new(
-            "Desktop (for shortcut instructions)",
-            vec![
-                "hyprland".into(),
-                "niri".into(),
-                "gnome".into(),
-                "kde".into(),
-                "sway".into(),
-                "other".into(),
-            ],
-        )
-        .with_starting_cursor(match detected {
-            "gnome" => 2,
-            "kde" => 3,
-            "sway" => 4,
-            "niri" => 1,
-            _ => 0,
-        })
-        .prompt()?
+        let choices = desktop_choices();
+        let start = choices.iter().position(|c| c == detected).unwrap_or(0);
+        Select::new("Desktop (for shortcut instructions)", choices)
+            .with_starting_cursor(start)
+            .prompt()?
     };
     set_config_value(&path, "shortcut-desktop", &desktop)?;
     set_config_value(&path, "shortcut-key", live_key.trim())?;
@@ -136,9 +147,9 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
 
     let desktop_enum = parse_shortcut_desktop(&desktop);
     let live_key_saved =
-        read_config_value(&path, "SHORTCUT_KEY_LIVE")?.unwrap_or_else(|| "SUPER,R".to_string());
+        read_config_value(&path, "SHORTCUT_KEY_LIVE")?.unwrap_or_else(|| default_live.to_string());
     let smart_key_saved = read_config_value(&path, "SHORTCUT_KEY_SMART")?
-        .unwrap_or_else(|| "SUPER,SHIFT,R".to_string());
+        .unwrap_or_else(|| default_smart.to_string());
 
     println!("\n✓ Saved {}\n", path.display());
 
@@ -189,17 +200,30 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
         }
     }
 
-    let warm = Confirm::new("Start warm Dictate daemons at login for instant shortcuts?")
+    // On Windows this also registers the shortcuts themselves — there is no
+    // compositor to hold them, so the agent has to be running.
+    #[cfg(windows)]
+    let (question, help) = (
+        "Run the Dictate hotkey agent at login?",
+        "Required for the shortcuts to work at all. Also keeps live + smart daemons warm.",
+    );
+    #[cfg(unix)]
+    let (question, help) = (
+        "Start warm Dictate daemons at login for instant shortcuts?",
+        "Recommended: removes cold-start delay by keeping live + smart daemons idle until you press a shortcut.",
+    );
+
+    let warm = Confirm::new(question)
         .with_default(true)
-        .with_help_message("Recommended: removes cold-start delay by keeping live + smart daemons idle until you press a shortcut.")
+        .with_help_message(help)
         .prompt()?;
     if warm {
         if let Err(e) = run_autostart_command(&AutostartCommand::Install) {
-            eprintln!("⚠ Could not install warm daemons: {e}");
+            eprintln!("⚠ Could not set up autostart: {e}");
             eprintln!("  You can retry later with: dictate autostart install");
         }
     } else {
-        println!("Warm daemons skipped. You can enable later with: dictate autostart install");
+        println!("Skipped. You can enable later with: dictate autostart install");
     }
 
     let run_doc = Confirm::new("Run dictate doctor now?")

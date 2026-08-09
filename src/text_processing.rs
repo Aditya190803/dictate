@@ -72,7 +72,7 @@ impl CommandModeConfig {
     #[cfg_attr(test, allow(dead_code))]
     pub fn clipboard_command_or_default(&self) -> Vec<String> {
         if self.clipboard_command.is_empty() {
-            vec!["wl-paste".to_string(), "--no-newline".to_string()]
+            crate::platform::clipboard_read_command()
         } else {
             self.clipboard_command.clone()
         }
@@ -102,7 +102,7 @@ fn default_polish_enabled() -> bool {
     true
 }
 fn default_polish_model() -> String {
-    "mistral-small-latest".to_string()
+    "big-pickle".to_string()
 }
 fn default_polish_temperature() -> f32 {
     0.2

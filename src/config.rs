@@ -1,3 +1,4 @@
+use crate::platform;
 use crate::profile::DictateProfile;
 use crate::text_processing::TextProcessingConfig;
 use anyhow::Result;
@@ -6,29 +7,24 @@ use std::path::{Path, PathBuf};
 /// Chat backend for transcript polish (not the STT provider).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolishBackend {
+    /// OpenCode Zen (OpenAI-compatible, `big-pickle`). Text-only — never used for STT.
+    OpenCode,
     Mistral,
     Ollama,
 }
 
 /// Ctrl+V via ydotool with explicit press/release. Never use `29:125` — that leaves Ctrl+Super stuck down.
+#[cfg(unix)]
 pub const YDOTOOL_PASTE_SHELL: &str = "wl-copy && ydotool key 29:1 47:1 47:0 29:0";
 
+/// Resolve `SHORTCUT_OUTPUT` to a pipe target for the current platform.
+///
+/// Wayland shells out to ydotool/wl-copy; Windows uses in-process sinks. See
+/// [`crate::platform`].
 fn parse_pipe_to_env(mode: Option<&str>) -> Option<Vec<String>> {
     match mode?.trim().to_lowercase().as_str() {
-        "type" | "typing" => Some(vec![
-            "ydotool".to_string(),
-            "type".to_string(),
-            "--file".to_string(),
-            "-".to_string(),
-        ]),
-        "clipboard" | "copy" => Some(vec!["wl-copy".to_string()]),
-        "paste" | "clipboard_paste" => Some(vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            YDOTOOL_PASTE_SHELL.to_string(),
-        ]),
         "stdout" | "" => None,
-        _ => None,
+        mode => platform::pipe_to_for_mode(mode),
     }
 }
 
@@ -47,6 +43,9 @@ pub struct Config {
     pub groq_api_key: Option<String>,
     pub groq_base_url: Option<String>,
     pub groq_model: String,
+    pub deepgram_api_key: Option<String>,
+    pub deepgram_base_url: Option<String>,
+    pub deepgram_model: String,
     pub transcription_provider: String,
     pub transcription_language: String,
     pub transcription_timeout_seconds: u64,
@@ -74,10 +73,14 @@ pub struct Config {
     pub context_editing: bool,
     pub context_editing_max_delete_chars: usize,
     pub context_editing_max_delete_words: usize,
-    /// LLM for polish / command-mode fallback: `auto`, `mistral`, or `ollama`.
+    /// LLM for polish / command-mode fallback: `auto`, `opencode`, `mistral`, or `ollama`.
     pub polish_provider: String,
     pub ollama_base_url: String,
     pub ollama_api_key: Option<String>,
+    /// OpenCode Zen key for text polish only. Separate from `mistral_api_key`, which
+    /// stays the speech-to-text credential — OpenCode Zen cannot do transcription.
+    pub opencode_api_key: Option<String>,
+    pub opencode_base_url: Option<String>,
 }
 
 impl Default for Config {
@@ -94,6 +97,9 @@ impl Default for Config {
             groq_api_key: None,
             groq_base_url: None,
             groq_model: "whisper-large-v3-turbo".to_string(),
+            deepgram_api_key: None,
+            deepgram_base_url: None,
+            deepgram_model: "nova-3".to_string(),
             transcription_provider: "mistral".to_string(),
             transcription_language: "auto".to_string(),
             transcription_timeout_seconds: 60,
@@ -117,6 +123,8 @@ impl Default for Config {
             polish_provider: "auto".to_string(),
             ollama_base_url: "http://127.0.0.1:11434".to_string(),
             ollama_api_key: None,
+            opencode_api_key: None,
+            opencode_base_url: None,
         }
     }
 }
@@ -181,6 +189,9 @@ impl Config {
             groq_api_key: std::env::var("GROQ_API_KEY").ok(),
             groq_base_url: std::env::var("GROQ_BASE_URL").ok(),
             groq_model: env_str_or("GROQ_MODEL", "whisper-large-v3-turbo"),
+            deepgram_api_key: std::env::var("DEEPGRAM_API_KEY").ok(),
+            deepgram_base_url: std::env::var("DEEPGRAM_BASE_URL").ok(),
+            deepgram_model: env_str_or("DEEPGRAM_MODEL", "nova-3"),
             transcription_provider: env_str_or("TRANSCRIPTION_PROVIDER", "mistral"),
             transcription_language: env_str_or("TRANSCRIPTION_LANGUAGE", "auto"),
             transcription_timeout_seconds: env_parse_or("TRANSCRIPTION_TIMEOUT_SECONDS", 60u64),
@@ -223,6 +234,8 @@ impl Config {
             polish_provider: env_str_or("POLISH_PROVIDER", "auto"),
             ollama_base_url: env_str_or("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
             ollama_api_key: std::env::var("OLLAMA_API_KEY").ok(),
+            opencode_api_key: std::env::var("OPENCODE_API_KEY").ok(),
+            opencode_base_url: std::env::var("OPENCODE_BASE_URL").ok(),
         }
     }
 
@@ -241,14 +254,26 @@ impl Config {
         self.resolve_polish_backend().is_some()
     }
 
-    /// `auto`: Mistral if key set, else Ollama. Explicit `mistral` / `ollama` require that backend.
+    /// `auto`: OpenCode Zen if its key is set, else Mistral if its key is set, else Ollama.
+    /// Explicit `opencode` / `mistral` / `ollama` require that backend.
+    ///
+    /// This only ever picks a *polish* (text) backend. STT provider selection is
+    /// independent and still driven by `transcription_provider`.
     pub fn resolve_polish_backend(&self) -> Option<PolishBackend> {
         let mode = self.polish_provider.trim().to_lowercase();
-        let mistral = self
-            .mistral_api_key
+        let opencode = self
+            .opencode_api_key
             .as_ref()
-            .is_some_and(|k| !k.is_empty());
+            .is_some_and(|k| !k.trim().is_empty());
+        let mistral = self.mistral_api_key.as_ref().is_some_and(|k| !k.is_empty());
         match mode.as_str() {
+            "opencode" | "zen" | "big-pickle" => {
+                if opencode {
+                    Some(PolishBackend::OpenCode)
+                } else {
+                    None
+                }
+            }
             "mistral" => {
                 if mistral {
                     Some(PolishBackend::Mistral)
@@ -258,7 +283,9 @@ impl Config {
             }
             "ollama" => Some(PolishBackend::Ollama),
             "auto" | "" => {
-                if mistral {
+                if opencode {
+                    Some(PolishBackend::OpenCode)
+                } else if mistral {
                     Some(PolishBackend::Mistral)
                 } else {
                     Some(PolishBackend::Ollama)
@@ -278,11 +305,29 @@ impl Config {
 
     /// Mistral realtime WebSocket STT (default segmented + legacy live typing).
     pub fn use_mistral_realtime_stt(&self) -> bool {
+        self.realtime_capable_profile()
+            && self.transcription_provider.eq_ignore_ascii_case("mistral")
+            && !self.transcription_mode.eq_ignore_ascii_case("batch")
+    }
+
+    /// Deepgram realtime WebSocket STT — same profiles as Mistral, different wire
+    /// protocol (raw PCM frames in, `Results` messages out, no session handshake).
+    pub fn use_deepgram_realtime_stt(&self) -> bool {
+        self.realtime_capable_profile()
+            && self.transcription_provider.eq_ignore_ascii_case("deepgram")
+            && !self.transcription_mode.eq_ignore_ascii_case("batch")
+    }
+
+    /// Whether any realtime WebSocket path can run, regardless of provider.
+    pub fn use_realtime_stt(&self) -> bool {
+        self.use_mistral_realtime_stt() || self.use_deepgram_realtime_stt()
+    }
+
+    fn realtime_capable_profile(&self) -> bool {
         matches!(
             self.profile,
             DictateProfile::Segmented | DictateProfile::LiveTyping
-        ) && self.transcription_provider.eq_ignore_ascii_case("mistral")
-            && !self.transcription_mode.eq_ignore_ascii_case("batch")
+        )
     }
 
     /// Effective pipe command: CLI override or configured default.
@@ -335,7 +380,10 @@ impl Config {
     pub fn load_env_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         if let Err(err) = Self::prune_retired_env_keys(path) {
-            log::warn!("failed to prune retired env keys from {}: {err}", path.display());
+            log::warn!(
+                "failed to prune retired env keys from {}: {err}",
+                path.display()
+            );
         }
         dotenvy::from_path(path)?;
         Ok(Self::from_env())
@@ -376,6 +424,14 @@ impl Config {
                     );
                 }
             }
+            "deepgram" => {
+                if self.deepgram_api_key.is_none() {
+                    anyhow::bail!(
+                        "DEEPGRAM_API_KEY is required when using Deepgram provider. \
+                         Please set it in your .env file."
+                    );
+                }
+            }
             "local" => {
                 let model_path = Config::model_path(&self.whisper_model);
                 if !model_path.exists() {
@@ -388,7 +444,7 @@ impl Config {
             other => {
                 anyhow::bail!(
                     "Unsupported transcription provider: {other}. \
-                     Supported providers: mistral, groq, local"
+                     Supported providers: mistral, groq, deepgram, local"
                 );
             }
         }
@@ -460,6 +516,9 @@ mod tests {
             "GROQ_API_KEY",
             "GROQ_BASE_URL",
             "GROQ_MODEL",
+            "DEEPGRAM_API_KEY",
+            "DEEPGRAM_BASE_URL",
+            "DEEPGRAM_MODEL",
             "TRANSCRIPTION_PROVIDER",
             "TRANSCRIPTION_LANGUAGE",
             "TRANSCRIPTION_TIMEOUT_SECONDS",
@@ -628,16 +687,39 @@ mod tests {
     }
 
     #[test]
+    fn polish_auto_prefers_opencode_over_mistral() {
+        let config = Config {
+            opencode_api_key: Some("k".to_string()),
+            mistral_api_key: Some("k".to_string()),
+            polish_provider: "auto".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.resolve_polish_backend(),
+            Some(PolishBackend::OpenCode)
+        );
+    }
+
+    /// An OpenCode key must never be mistaken for an STT credential.
+    #[test]
+    fn opencode_key_alone_does_not_enable_mistral_polish() {
+        let config = Config {
+            opencode_api_key: Some("k".to_string()),
+            mistral_api_key: None,
+            polish_provider: "mistral".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(config.resolve_polish_backend(), None);
+    }
+
+    #[test]
     fn polish_auto_uses_ollama_without_mistral_key() {
         let config = Config {
             mistral_api_key: None,
             polish_provider: "auto".to_string(),
             ..Default::default()
         };
-        assert_eq!(
-            config.resolve_polish_backend(),
-            Some(PolishBackend::Ollama)
-        );
+        assert_eq!(config.resolve_polish_backend(), Some(PolishBackend::Ollama));
     }
 
     #[test]

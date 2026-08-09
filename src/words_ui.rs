@@ -11,6 +11,12 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+/// Late-bound handle to the list refresh closure.
+///
+/// The refresh needs to be callable from the row callbacks it itself creates, so
+/// the slot is filled in after those closures capture it.
+type RefreshSlot = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
 fn subtitle(text: &str) -> Label {
     let label = Label::new(Some(text));
     label.set_wrap(true);
@@ -202,7 +208,7 @@ fn build_window(app: &Application, path: PathBuf, initial_book: WordBook) {
     status.add_css_class("dim-label");
     root.append(&status);
 
-    let refresh_slot: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+    let refresh_slot: RefreshSlot = Rc::new(RefCell::new(None));
 
     {
         let book = Rc::clone(&book);
@@ -355,7 +361,9 @@ fn build_window(app: &Application, path: PathBuf, initial_book: WordBook) {
             let miss = if correct_misspelling.is_active() {
                 let w = wrong_entry.text().trim().to_string();
                 if w.is_empty() {
-                    status.set_text("Enter the misspelling Dictate produces, or turn the option off.");
+                    status.set_text(
+                        "Enter the misspelling Dictate produces, or turn the option off.",
+                    );
                     return;
                 }
                 if crate::word_store::word_char_len(&w) > MAX_WORD_LEN {
@@ -368,11 +376,7 @@ fn build_window(app: &Application, path: PathBuf, initial_book: WordBook) {
             };
             {
                 let mut b = book.borrow_mut();
-                b.upsert_row(
-                    &word,
-                    miss.as_deref(),
-                    prev.as_deref(),
-                );
+                b.upsert_row(&word, miss.as_deref(), prev.as_deref());
                 save_and_status(&path, &b, &status);
             }
             *editing_word.borrow_mut() = None;

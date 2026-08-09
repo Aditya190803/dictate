@@ -1,6 +1,8 @@
 # dictate — Installation Guide
 
-## Quick Install
+Linux (Wayland) and Windows. For Windows jump to **[Windows](#windows)** — or the full guide, [docs/windows.md](docs/windows.md).
+
+## Quick Install (Linux)
 
 One command to install dictate on any Linux distro:
 
@@ -37,7 +39,7 @@ DICTATE_BUILD_FROM_SOURCE=yes sh -c "$(curl -fsSL https://dictate.adityamer.dev/
 
 ---
 
-## Manual Installation
+## Manual Installation (Linux)
 
 ### Prerequisites
 
@@ -131,12 +133,107 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 
 ---
 
+## Windows
+
+Same binary and same config keys as Linux. The platform glue differs: output sinks are in-process Win32 calls (no `ydotool` / `wl-clipboard`), audio is WASAPI (no PipeWire), and daemon control is a named pipe (no `SIGUSR1`). Full detail: **[docs/windows.md](docs/windows.md)**.
+
+### Toolchain
+
+| Item | Status |
+|------|--------|
+| C compiler | **Not needed.** TLS is per-target: Unix uses rustls+ring, Windows uses SChannel via `native-tls` |
+| `x86_64-pc-windows-msvc` | Works with the Visual Studio Build Tools linker |
+| `x86_64-pc-windows-gnu` | Works with MinGW-w64 binutils on `PATH`. rustup's bundled `dlltool` is not enough — it invokes `as`, which rustup does not ship |
+| Audio | cpal → WASAPI, no extra setup |
+| `--features words-ui` | Not supported on Windows (GTK4) |
+| `--features local` | Not supported/tested on Windows (whisper-rs needs cmake + clang) |
+
+### Build
+
+Pick one toolchain:
+
+```powershell
+# Option A — MSVC (the Rust default on Windows)
+winget install Microsoft.VisualStudio.2022.BuildTools    # "Desktop development with C++"
+rustup default stable-x86_64-pc-windows-msvc
+
+# Option B — GNU (no Visual Studio)
+winget install BrechtSanders.WinLibs.POSIX.UCRT
+rustup default stable-x86_64-pc-windows-gnu
+$env:PATH = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin;$env:PATH"
+```
+
+```powershell
+git clone https://github.com/Aditya190803/dictate.git
+cd dictate
+cargo build --release
+copy target\release\dictate.exe %USERPROFILE%\bin\dictate.exe   # any dir on PATH
+```
+
+### Configure
+
+```powershell
+dictate setup      # same wizard; reports Windows-specific checks
+dictate doctor
+```
+
+| Path | Contents |
+|------|----------|
+| `%APPDATA%\dictate\.env` | Config — same keys as Linux |
+| `%APPDATA%\dictate\text.toml` | Dictionary, snippets, cleanup, `[polish]` |
+| `%APPDATA%\dictate\` | Models, history, scratchpad |
+
+`SHORTCUT_OUTPUT` on Windows: `type` = Win32 `SendInput` (Unicode) into the focused window · `paste` = clipboard + Ctrl+V · `clipboard` = Win32 clipboard · `stdout` = print. Command mode (`dictate --command`) reads the Win32 clipboard directly.
+
+### Shortcuts
+
+**`Win+R` is reserved by Windows (Run dialog), so the default `SUPER,R` will not register.** Change both keys:
+
+```powershell
+dictate config set SHORTCUT_KEY_LIVE  "CTRL,ALT,R"
+dictate config set SHORTCUT_KEY_SMART "CTRL,ALT,SHIFT,R"
+```
+
+Shortcut strings accept `SUPER,R`, `Meta+Shift+R`, and `<Super>r` styles; a modifier is required.
+
+```powershell
+dictate hotkeys            # background agent: RegisterHotKey → dictate toggle live | smart
+dictate hotkeys --warm     # also pre-starts idle daemons so the first press is instant
+dictate shortcuts windows  # printed setup guidance
+```
+
+### Autostart
+
+```powershell
+dictate autostart install   # Run-key entry + starts the agent now
+dictate autostart status
+dictate autostart remove
+```
+
+Registers the hotkey agent under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` via a hidden `wscript` launcher at `%APPDATA%\dictate\hotkey-agent.vbs`. (`dictate shortcuts windows --install` is an alias.) On Linux the same command manages systemd user services.
+
+### Daemon control
+
+No `SIGUSR1`. Daemons listen on `\\.\pipe\dictate-live`, `\\.\pipe\dictate-smart`, `\\.\pipe\dictate-main`; `dictate toggle live|smart` connects and sends a toggle. Ctrl+C stops a daemon.
+
+### Windows troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| Hotkey never fires | Combo is taken by Windows or another app (classically `Win+R`) — pick another and restart `dictate hotkeys` |
+| Nothing typed into an app running as Administrator | `SendInput` cannot reach elevated windows unless dictate is elevated too; run dictate as Administrator or use `SHORTCUT_OUTPUT=clipboard` |
+| `dictate words` opens Notepad instead of the GUI | Expected — the `words-ui` GTK build is Linux-only; set `$EDITOR` to change the editor |
+| First key press is slow | `dictate hotkeys --warm`, or `dictate autostart install` |
+| `toggle` reports no daemon | Start `dictate --daemon --mode live`, or use `--warm` / autostart |
+
+---
+
 ## Configuration
 
 ### Create Config File
 
 ```bash
-mkdir -p ~/.config/dictate
+mkdir -p ~/.config/dictate     # Windows: %APPDATA%\dictate
 ```
 
 ### Interactive setup
@@ -223,20 +320,23 @@ dictate config edit
 
 ### Polish & `text.toml`
 
-Default **`segmented`** dictation polishes **each pause-bound segment** with Mistral chat when `MISTRAL_API_KEY` is set. Without a key, segments still get local dictionary/snippets/cleanup and context edits.
+Default **`segmented`** dictation polishes **each pause-bound segment** with **OpenCode Zen** (`big-pickle`) when `OPENCODE_API_KEY` is set. Without a key, segments still get local dictionary/snippets/cleanup and context edits.
 
 Create `~/.config/dictate/text.toml` (optional):
 
 ```toml
 [polish]
 enabled = true
-model = "mistral-small-latest"
+model = "big-pickle"
+max_tokens = 2048
 on_failure = "fallback"   # fallback = insert locally cleaned text; error = insert nothing
 
 # Same file can hold dictionary, snippets, cleanup — see README
 ```
 
-Uses the same **`MISTRAL_API_KEY`** as speech-to-text. If polish fails after retries, `on_failure=fallback` pastes the locally processed transcript and prints a warning.
+Polish uses **`OPENCODE_API_KEY`**, which is separate from the `MISTRAL_API_KEY` used for speech-to-text — OpenCode Zen is text-only and cannot transcribe audio. If polish fails after retries, `on_failure=fallback` pastes the locally processed transcript and prints a warning.
+
+> `big-pickle` is a **reasoning** model: tokens it spends reasoning count against `max_tokens`. A budget under ~1024 gets consumed before any visible text is produced, so dictate raises anything below **2048** to 2048 automatically. Only the assistant `content` is inserted; the model's `reasoning_content` is never shown.
 
 ### Using a Custom Config Path
 
@@ -247,6 +347,8 @@ dictate --envfile /path/to/custom/.env
 ---
 
 ## Local Whisper Setup
+
+Linux only — the `local` feature is not supported on Windows.
 
 If you want offline transcription (your audio never leaves your machine):
 
@@ -280,6 +382,8 @@ If you want offline transcription (your audio never leaves your machine):
 ---
 
 ## Composer Shortcuts
+
+Wayland compositors. On Windows use `dictate hotkeys` / `dictate autostart install` — see [Windows](#windows).
 
 ### Hyprland
 
@@ -372,6 +476,14 @@ rm -rf ~/.local/share/dictate
 yay -R dictate-bin
 # or
 paru -R dictate-bin
+```
+
+Windows:
+
+```powershell
+dictate autostart remove          # drop the Run-key entry + hotkey agent
+del %USERPROFILE%\bin\dictate.exe
+rmdir /s /q %APPDATA%\dictate     # config, models, history, scratchpad
 ```
 
 ---

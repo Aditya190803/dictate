@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -14,40 +14,59 @@ const jetbrainsMono = JetBrains_Mono({
   display: "swap",
 });
 
+const DESCRIPTION =
+  "Press a key, talk, and the words land in the focused window. A daemon-friendly speech-to-text CLI for Wayland Linux and Windows, with realtime transcription and a fully offline mode.";
+
 export const metadata: Metadata = {
-  title: "dictate — Wayland Speech-to-Text",
-  description:
-    "Press a keybind and get instant text output. A signal-driven CLI for Linux with Mistral realtime STT by default and BATCH_MODE as an opt-out.",
+  metadataBase: new URL("https://dictate.adityamer.dev"),
+  title: "dictate — speech to text for Linux and Windows",
+  description: DESCRIPTION,
   keywords: [
-    "speech-to-text", "wayland", "linux", "cli", "whisper",
-    "dictation", "voice-to-text", "transcription", "rust", "pipewire",
+    "speech-to-text", "dictation", "voice typing", "wayland", "linux",
+    "windows", "cli", "whisper", "voxtral", "deepgram", "transcription", "rust",
   ],
+  authors: [{ name: "Aditya Mer" }],
   openGraph: {
-    title: "dictate — Wayland Speech-to-Text",
-    description:
-      "Press a keybind, speak, get text. Mistral realtime STT by default for Wayland Linux desktops.",
+    title: "dictate — speech to text for Linux and Windows",
+    description: DESCRIPTION,
     type: "website",
     url: "https://dictate.adityamer.dev",
+    siteName: "dictate",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "dictate — speech to text for Linux and Windows",
+    description: DESCRIPTION,
   },
 };
 
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f5f3ef" },
+    { media: "(prefers-color-scheme: dark)", color: "#101211" },
+  ],
+};
+
+/**
+ * Applies a stored theme before first paint. Without this the page renders in
+ * the system theme and then snaps to the stored one — a visible flash on every
+ * load for anyone who picked the non-default.
+ */
+const THEME_INIT = `(function(){try{var t=localStorage.getItem('theme');if(t==='dark'||t==='light'){document.documentElement.dataset.theme=t}}catch(e){}})()`;
+
 export default function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
     <html
       lang="en"
       className={`${inter.variable} ${jetbrainsMono.variable}`}
       suppressHydrationWarning
     >
-      <body
-        style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}
-        suppressHydrationWarning
-      >
-        {children}
-      </body>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
+      </head>
+      <body suppressHydrationWarning>{children}</body>
     </html>
   );
 }

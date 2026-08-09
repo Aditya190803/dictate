@@ -538,12 +538,18 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
                 println!("✓ LLM polish: Mistral chat ([polish] in text.toml)");
             }
             Some(crate::config::PolishBackend::Ollama) => {
-                let model = if config.text_processing.polish.model.trim().is_empty()
-                    || config.text_processing.polish.model.contains("mistral")
+                // Mirrors the Ollama arm of `resolve_polish_model` in llm_polish.rs:
+                // `big-pickle` and `mistral-*` are hosted-API ids that Ollama cannot
+                // serve, so they count as unset here too. Without the `big-pickle`
+                // case, doctor reports a model the runtime would never actually use.
+                let configured = config.text_processing.polish.model.trim();
+                let model = if configured.is_empty()
+                    || configured.contains("mistral")
+                    || configured.eq_ignore_ascii_case("big-pickle")
                 {
                     std::env::var("OLLAMA_POLISH_MODEL").unwrap_or_else(|_| "gemma-4".to_string())
                 } else {
-                    config.text_processing.polish.model.clone()
+                    configured.to_string()
                 };
                 println!(
                     "✓ LLM polish: Ollama at {} (model: {model})",

@@ -64,7 +64,7 @@ use transcription::{SharedProvider, TranscriptionFactory};
 
 #[derive(Parser)]
 #[command(name = "dictate")]
-#[command(about = "Wayland Speech-to-Text Tool - Signal-driven transcription")]
+#[command(about = "Speech-to-Text for Wayland and Windows - shortcut-driven transcription")]
 #[command(version)]
 struct Args {
     /// Path to environment file
@@ -254,7 +254,7 @@ async fn download_model(model: &str) -> Result<PathBuf> {
 
 #[cfg(not(test))]
 async fn run_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Result<()> {
-    info!("dictate - Wayland Speech-to-Text Tool");
+    info!("dictate - Speech-to-Text for Wayland and Windows");
     let beep_config = BeepConfig {
         enabled: config.enable_audio_feedback,
         volume: config.beep_volume,

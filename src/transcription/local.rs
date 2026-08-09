@@ -84,7 +84,13 @@ impl TranscriptionProvider for LocalWhisperProvider {
         let mut result = String::new();
         let num_segments = state.full_n_segments();
         for i in 0..num_segments {
-            if let Some(text) = state.get_segment(i).and_then(|s| s.to_str().ok()) {
+            // The segment must be bound to a local: `to_str()` borrows from it, so
+            // chaining off `get_segment(i)` would return a reference into a
+            // temporary that is dropped at the end of the statement (E0515).
+            let Some(segment) = state.get_segment(i) else {
+                continue;
+            };
+            if let Ok(text) = segment.to_str() {
                 result.push_str(text);
             }
         }

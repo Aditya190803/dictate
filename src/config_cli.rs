@@ -240,6 +240,9 @@ fn normalize_config_key(key: &str) -> String {
         "groq_key" | "groq_api_key" => "GROQ_API_KEY",
         "groq_model" => "GROQ_MODEL",
         "groq_base_url" => "GROQ_BASE_URL",
+        "deepgram_key" | "deepgram_api_key" => "DEEPGRAM_API_KEY",
+        "deepgram_model" => "DEEPGRAM_MODEL",
+        "deepgram_base_url" => "DEEPGRAM_BASE_URL",
         "local_model" | "whisper_model" => "WHISPER_MODEL",
         "audio_feedback" | "enable_audio_feedback" => "ENABLE_AUDIO_FEEDBACK",
         "beep_volume" => "BEEP_VOLUME",
@@ -309,7 +312,7 @@ fn run_config_wizard(path: &PathBuf, options: &WizardOptions) -> Result<()> {
 
     let provider = option_or_prompt(
         &options.provider,
-        "Provider (mistral/groq/local)",
+        "Provider (mistral/groq/deepgram/local)",
         Some("mistral"),
     )?
     .to_lowercase();
@@ -607,6 +610,17 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
                 println!("✓ GROQ_API_KEY is set");
             } else {
                 println!("✗ GROQ_API_KEY missing");
+            }
+        }
+        "deepgram" => {
+            if config
+                .deepgram_api_key
+                .as_ref()
+                .is_some_and(|k| !k.is_empty())
+            {
+                println!("✓ DEEPGRAM_API_KEY is set (model: {})", config.deepgram_model);
+            } else {
+                println!("✗ DEEPGRAM_API_KEY missing (required for Deepgram)");
             }
         }
         "local" => {

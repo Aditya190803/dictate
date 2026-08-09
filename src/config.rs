@@ -43,6 +43,9 @@ pub struct Config {
     pub groq_api_key: Option<String>,
     pub groq_base_url: Option<String>,
     pub groq_model: String,
+    pub deepgram_api_key: Option<String>,
+    pub deepgram_base_url: Option<String>,
+    pub deepgram_model: String,
     pub transcription_provider: String,
     pub transcription_language: String,
     pub transcription_timeout_seconds: u64,
@@ -94,6 +97,9 @@ impl Default for Config {
             groq_api_key: None,
             groq_base_url: None,
             groq_model: "whisper-large-v3-turbo".to_string(),
+            deepgram_api_key: None,
+            deepgram_base_url: None,
+            deepgram_model: "nova-3".to_string(),
             transcription_provider: "mistral".to_string(),
             transcription_language: "auto".to_string(),
             transcription_timeout_seconds: 60,
@@ -183,6 +189,9 @@ impl Config {
             groq_api_key: std::env::var("GROQ_API_KEY").ok(),
             groq_base_url: std::env::var("GROQ_BASE_URL").ok(),
             groq_model: env_str_or("GROQ_MODEL", "whisper-large-v3-turbo"),
+            deepgram_api_key: std::env::var("DEEPGRAM_API_KEY").ok(),
+            deepgram_base_url: std::env::var("DEEPGRAM_BASE_URL").ok(),
+            deepgram_model: env_str_or("DEEPGRAM_MODEL", "nova-3"),
             transcription_provider: env_str_or("TRANSCRIPTION_PROVIDER", "mistral"),
             transcription_language: env_str_or("TRANSCRIPTION_LANGUAGE", "auto"),
             transcription_timeout_seconds: env_parse_or("TRANSCRIPTION_TIMEOUT_SECONDS", 60u64),
@@ -397,6 +406,14 @@ impl Config {
                     );
                 }
             }
+            "deepgram" => {
+                if self.deepgram_api_key.is_none() {
+                    anyhow::bail!(
+                        "DEEPGRAM_API_KEY is required when using Deepgram provider. \
+                         Please set it in your .env file."
+                    );
+                }
+            }
             "local" => {
                 let model_path = Config::model_path(&self.whisper_model);
                 if !model_path.exists() {
@@ -409,7 +426,7 @@ impl Config {
             other => {
                 anyhow::bail!(
                     "Unsupported transcription provider: {other}. \
-                     Supported providers: mistral, groq, local"
+                     Supported providers: mistral, groq, deepgram, local"
                 );
             }
         }
@@ -481,6 +498,9 @@ mod tests {
             "GROQ_API_KEY",
             "GROQ_BASE_URL",
             "GROQ_MODEL",
+            "DEEPGRAM_API_KEY",
+            "DEEPGRAM_BASE_URL",
+            "DEEPGRAM_MODEL",
             "TRANSCRIPTION_PROVIDER",
             "TRANSCRIPTION_LANGUAGE",
             "TRANSCRIPTION_TIMEOUT_SECONDS",

@@ -6,7 +6,20 @@ use std::time::Duration;
 /// Authentication style for API requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthStyle {
+    /// `Authorization: Bearer <key>` — Mistral, Groq.
     Bearer,
+    /// `Authorization: Token <key>` — Deepgram.
+    Token,
+}
+
+/// Request/response shape of the upstream API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiDialect {
+    /// `POST {base}/audio/transcriptions`, multipart form, `{"text": ...}`.
+    OpenAiCompatible,
+    /// `POST {base}/v1/listen?model=..`, raw audio body, transcript nested under
+    /// `results.channels[0].alternatives[0].transcript`.
+    Deepgram,
 }
 
 /// Options for configuring an online transcription provider.
@@ -19,6 +32,7 @@ pub struct OnlineProviderOptions {
     pub model: String,
     pub base_url: String,
     pub auth_style: AuthStyle,
+    pub dialect: ApiDialect,
 }
 
 /// Provider that transcribes audio via a REST API (Mistral, Groq, etc.).
@@ -50,34 +64,64 @@ impl OnlineTranscriptionProvider {
         audio_data: &[u8],
         language: Option<&str>,
     ) -> Result<String, TranscriptionError> {
-        let url = format!(
-            "{}/audio/transcriptions",
-            self.options.base_url.trim_end_matches('/')
-        );
+        let base = self.options.base_url.trim_end_matches('/');
 
-        let audio_part = reqwest::multipart::Part::bytes(audio_data.to_vec())
-            .file_name("audio.wav")
-            .mime_str("audio/wav")
-            .map_err(|e| {
-                TranscriptionError::NetworkError(NetworkErrorDetails {
-                    provider: self.options.provider_name.to_string(),
-                    error_type: "HTTP client error".to_string(),
-                    error_message: e.to_string(),
-                })
-            })?;
+        let mut request = match self.options.dialect {
+            ApiDialect::OpenAiCompatible => {
+                let url = format!("{}/audio/transcriptions", base);
 
-        let mut form = reqwest::multipart::Form::new()
-            .part("file", audio_part)
-            .text("model", self.options.model.clone());
+                let audio_part = reqwest::multipart::Part::bytes(audio_data.to_vec())
+                    .file_name("audio.wav")
+                    .mime_str("audio/wav")
+                    .map_err(|e| {
+                        TranscriptionError::NetworkError(NetworkErrorDetails {
+                            provider: self.options.provider_name.to_string(),
+                            error_type: "HTTP client error".to_string(),
+                            error_message: e.to_string(),
+                        })
+                    })?;
 
-        if let Some(lang) = language {
-            form = form.text("language", lang.to_string());
-        }
+                let mut form = reqwest::multipart::Form::new()
+                    .part("file", audio_part)
+                    .text("model", self.options.model.clone());
 
-        let mut request = self.client.post(&url).multipart(form);
+                if let Some(lang) = language {
+                    form = form.text("language", lang.to_string());
+                }
+
+                self.client.post(&url).multipart(form)
+            }
+            ApiDialect::Deepgram => {
+                // Deepgram takes the raw audio as the request body and reads
+                // options from the query string. `smart_format` gives punctuation
+                // and capitalisation, which the polish step then refines.
+                let mut url = format!(
+                    "{}/v1/listen?model={}&smart_format=true",
+                    base, self.options.model
+                );
+                // Deepgram has no "auto" sentinel: omitting `language` lets it
+                // use the model default, and nova-3 needs `multi` to detect.
+                match language {
+                    Some(lang) if !lang.eq_ignore_ascii_case("auto") => {
+                        url.push_str("&language=");
+                        url.push_str(lang);
+                    }
+                    _ => {}
+                }
+
+                self.client
+                    .post(&url)
+                    .header("Content-Type", "audio/wav")
+                    .body(audio_data.to_vec())
+            }
+        };
+
         request = match self.options.auth_style {
             AuthStyle::Bearer => {
                 request.header("Authorization", format!("Bearer {}", self.options.api_key))
+            }
+            AuthStyle::Token => {
+                request.header("Authorization", format!("Token {}", self.options.api_key))
             }
         };
 
@@ -110,9 +154,18 @@ impl OnlineTranscriptionProvider {
         if status.is_success() {
             let json: Value = serde_json::from_str(&response_text)
                 .map_err(|e| TranscriptionError::JsonError(e.to_string()))?;
-            return json
-                .get("text")
-                .and_then(|t| t.as_str())
+            let transcript = match self.options.dialect {
+                ApiDialect::OpenAiCompatible => json.get("text").and_then(|t| t.as_str()),
+                ApiDialect::Deepgram => json
+                    .get("results")
+                    .and_then(|r| r.get("channels"))
+                    .and_then(|c| c.get(0))
+                    .and_then(|c| c.get("alternatives"))
+                    .and_then(|a| a.get(0))
+                    .and_then(|a| a.get("transcript"))
+                    .and_then(|t| t.as_str()),
+            };
+            return transcript
                 .map(|t| t.to_string())
                 .ok_or_else(|| {
                     TranscriptionError::ApiError(ApiErrorDetails {
@@ -218,12 +271,85 @@ mod tests {
             model: "test-model".to_string(),
             base_url: "https://example.test/v1".to_string(),
             auth_style: AuthStyle::Bearer,
+            dialect: ApiDialect::OpenAiCompatible,
         }
     }
 
     #[test]
     fn test_provider_creation() {
         assert!(OnlineTranscriptionProvider::new(test_options()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn deepgram_dialect_parses_nested_transcript() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/listen")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "model".into(),
+                "nova-3".into(),
+            ))
+            .match_header("authorization", "Token dg-key")
+            .with_status(200)
+            .with_body(
+                r#"{"results":{"channels":[{"alternatives":[{"transcript":"hello from deepgram"}]}]}}"#,
+            )
+            .create_async()
+            .await;
+
+        let provider = OnlineTranscriptionProvider::new(OnlineProviderOptions {
+            provider_name: "Deepgram",
+            api_key: "dg-key".to_string(),
+            timeout_seconds: 30,
+            max_retries: 0,
+            model: "nova-3".to_string(),
+            base_url: server.url(),
+            auth_style: AuthStyle::Token,
+            dialect: ApiDialect::Deepgram,
+        })
+        .unwrap();
+
+        let text = provider
+            .transcribe_with_language(vec![0u8; 32], Some("auto".to_string()))
+            .await
+            .unwrap();
+
+        assert_eq!(text, "hello from deepgram");
+        mock.assert_async().await;
+    }
+
+    /// `auto` is dictate's sentinel, not a Deepgram language code — sending it
+    /// verbatim makes Deepgram reject the request.
+    #[tokio::test]
+    async fn deepgram_dialect_omits_auto_language() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/listen")
+            .match_query(mockito::Matcher::Exact(
+                "model=nova-3&smart_format=true".into(),
+            ))
+            .with_status(200)
+            .with_body(r#"{"results":{"channels":[{"alternatives":[{"transcript":"ok"}]}]}}"#)
+            .create_async()
+            .await;
+
+        let provider = OnlineTranscriptionProvider::new(OnlineProviderOptions {
+            provider_name: "Deepgram",
+            api_key: "dg-key".to_string(),
+            timeout_seconds: 30,
+            max_retries: 0,
+            model: "nova-3".to_string(),
+            base_url: server.url(),
+            auth_style: AuthStyle::Token,
+            dialect: ApiDialect::Deepgram,
+        })
+        .unwrap();
+
+        provider
+            .transcribe_with_language(vec![0u8; 32], Some("auto".to_string()))
+            .await
+            .unwrap();
+        mock.assert_async().await;
     }
 
     #[tokio::test]

@@ -458,7 +458,12 @@ async fn run_deepgram_realtime_inner(
         beep_player.play_async(BeepType::RecordingStart).await.ok();
     }
 
-    let capture_rate = recorder.capture_sample_rate();
+    // Re-read after every start: the recorder reports the *requested* rate until
+    // the device is actually opened, and a warm daemon opens it on first toggle.
+    // Reading once here would pin 16000 while the mic really runs at 48000, and
+    // the resample below would become a no-op — Deepgram then receives audio at
+    // 3x speed and returns no transcripts at all.
+    let mut capture_rate = recorder.capture_sample_rate();
     let session_buffer = Arc::new(Mutex::new(TranscriptBuffer::new()));
     let pipe_owned = pipe_command.cloned();
     let dictation_mode = dictation_mode.to_string();
@@ -499,12 +504,23 @@ async fn run_deepgram_realtime_inner(
                     match recorder.start_continuous() {
                         Ok(rx) => {
                             audio_rx = Some(rx);
+                            // Only now does the recorder know the device's real rate.
+                            capture_rate = recorder.capture_sample_rate();
                             beep_player.play_async(BeepType::RecordingStart).await.ok();
-                            eprintln!("🎙️  Recording…");
+                            eprintln!("🎙️  Recording… (mic {capture_rate}Hz → 16000Hz)");
                         }
                         Err(e) => eprintln!("❌ Could not start recording: {e}"),
                     }
                 } else {
+                    // Deepgram buffers the tail of an utterance until it sees more
+                    // audio or an explicit flush. Without this the last thing said
+                    // before a toggle-off is never transcribed.
+                    ws_write
+                        .send(Message::Text(
+                            serde_json::json!({"type":"Finalize"}).to_string(),
+                        ))
+                        .await
+                        .ok();
                     recorder.stop_recording().ok();
                     drop(audio_rx.take());
                     beep_player.play_async(BeepType::RecordingStop).await.ok();
@@ -933,7 +949,10 @@ async fn run_mistral_realtime_inner(
     let mut audio_send_ready = true;
     let mut drain_flush_until: Option<Instant> = None;
     let mut first_audio_logged = false;
-    let capture_rate = recorder.capture_sample_rate();
+    // Must be re-read after each start: until the device is opened the recorder
+    // reports the *requested* rate, so a warm daemon would pin 16000 while the
+    // mic actually runs at 48000 and the resample below would silently no-op.
+    let mut capture_rate = recorder.capture_sample_rate();
 
     loop {
         if let Some(until) = drain_flush_until {
@@ -996,6 +1015,7 @@ async fn run_mistral_realtime_inner(
                     session_buffer.lock().await.clear();
                     eprintln!("\n▶️  Dictation started");
                     audio_rx = Some(recorder.start_continuous()?);
+                    capture_rate = recorder.capture_sample_rate();
                     last_audio_time = Instant::now();
                     active = true;
                     audio_send_ready = true;
@@ -1025,6 +1045,7 @@ async fn run_mistral_realtime_inner(
                     session_buffer.lock().await.clear();
                     eprintln!("\n▶️  Dictation started");
                     audio_rx = Some(recorder.start_continuous()?);
+                    capture_rate = recorder.capture_sample_rate();
                     last_audio_time = Instant::now();
                     beep_player.play_async(BeepType::RecordingStart).await.ok();
                 } else {

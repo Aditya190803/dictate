@@ -1,5 +1,7 @@
 # dictate → FluidVoice-class parity (extension plan)
 
+> Current roadmap lives in [`features.md`](features.md); this file is the FluidVoice-parity comparison and phased plan.
+
 This document lists what **dictate** would need to feel **comparable to [FluidVoice](https://github.com/altic-dev/FluidVoice)** for daily dictation on Linux (and optionally Windows)—without porting the macOS Swift app.
 
 **How to use it:** Each row is a trackable gap. Phases order work by user-visible value vs engineering risk. See also [`docs/wispr-flow-gap.md`](docs/wispr-flow-gap.md) (commercial Flow comparison).
@@ -173,7 +175,7 @@ This document lists what **dictate** would need to feel **comparable to [FluidVo
 
 ### Phase 4 — Platform & packaging (parallel)
 
-- [ ] **Windows:** cpal, hotkey crate, clipboard paste typing, build in CI.
+- [x] **Windows:** cpal, hotkey crate, clipboard paste typing, build in CI. **DONE** — shipped; see [`docs/windows.md`](docs/windows.md) and [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 - [ ] Flatpak + PipeWire permissions.
 - [ ] Optional Tauri **settings + tray** (no duplicate daemon logic).
 - [ ] `dictate install --user-service` for systemd user daemon.

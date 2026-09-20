@@ -10,7 +10,7 @@ Legend: **Partial** = similar idea, weaker or different UX. **Done** = shipped i
 
 | Flow | dictate |
 |------|---------|
-| macOS / Windows native apps | Linux (Wayland); no macOS/Windows app |
+| macOS / Windows native apps | Linux (Wayland); Windows via `dictate hotkeys` agent (`RegisterHotKey`, see `docs/windows.md`); no macOS app |
 | iOS / Android | — |
 | Browser / web dictation | — |
 | Linux / WSL / terminal | **Native** CLI + compositor shortcuts |
@@ -21,7 +21,7 @@ Legend: **Partial** = similar idea, weaker or different UX. **Done** = shipped i
 
 | Flow | dictate |
 |------|---------|
-| **Flow Bar** | Daemon (beeps / terminal feedback) |
+| **Flow Bar** | Daemon (beeps / terminal feedback); Windows global hotkeys via `dictate hotkeys` agent |
 | **Scratchpad** | **Done:** `dictate scratchpad` → `~/.local/share/dictate/scratchpad.md` |
 | **Hands-free** | **Done:** live typing daemon on `SUPER,R`; smart paste available on a second shortcut |
 | Onboarding | `dictate setup`, `dictate config wizard`, `dictate doctor` |

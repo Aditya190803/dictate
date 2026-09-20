@@ -1,3 +1,5 @@
+> ARCHIVED: landed, kept for history
+
 # Suggested PR split (current working tree)
 
 Work is intertwined in a few files (`config.rs`, `main.rs`, `streaming.rs`, `Cargo.toml`, `INSTALL.md`). Use **stacked branches** or `git add -p` on those files. Order matters: land **overlay removal** before polish/docs that assume no pill.

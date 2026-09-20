@@ -389,6 +389,10 @@ fn deepgram_realtime_url(config: &Config) -> String {
         url.push_str("&language=");
         url.push_str(&lang);
     }
+    crate::transcription::append_deepgram_keyterms(
+        &mut url,
+        &crate::text_processing::preferred_vocabulary(&config.text_processing),
+    );
     url
 }
 
@@ -1329,5 +1333,22 @@ mod tests {
             take_plus_tail("Tomorrow is Tuesday, right?", "No wait it's Wednesday"),
             "Tomorrow is Tuesday, right? No wait it's Wednesday"
         );
+    }
+
+    #[test]
+    fn deepgram_url_includes_dictionary_keyterms() {
+        use crate::config::Config;
+        use crate::text_processing::TextProcessingConfig;
+
+        let config = Config {
+            text_processing: TextProcessingConfig {
+                preferred_words: vec!["Hyprland".into(), "bad&x=1".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let url = super::deepgram_realtime_url(&config);
+        assert!(url.contains("&keyterm=Hyprland"));
+        assert!(!url.contains("bad"));
     }
 }

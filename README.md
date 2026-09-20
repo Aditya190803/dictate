@@ -46,7 +46,7 @@ Run `dictate setup` once.
 
 - **STT:** Mistral (default), Groq, or local Whisper (`--features local`)
 - **Polish:** Independent of STT — `POLISH_PROVIDER=auto` uses **OpenCode Zen** (`big-pickle`) if `OPENCODE_API_KEY` is set, else Mistral if `MISTRAL_API_KEY` is set, else **Ollama** (`ollama pull gemma-4`). Groq/local STT + Ollama polish works.
-- **Dictionary:** `dictate words` — GUI for names, jargon, and misspelling fixes (`words-ui` build)
+- **Dictionary:** `dictate words` — names and jargon you say often (`dictate words Hyprland`). Fed to STT plus local cleanup. GTK UI on Linux `words-ui` builds.
 - **text.toml:** Dictionary, snippets, cleanup, `[polish]` style/model, command mode
 - **Output:** stdout, clipboard, type, or paste — `SHORTCUT_OUTPUT` (Linux: `ydotool`/`wl-copy`; Windows: in-process `SendInput`/Win32 clipboard)
 
@@ -88,7 +88,8 @@ CLI: `dictate` · `dictate setup` · `dictate doctor` · `dictate config get|set
 dictate setup
 dictate doctor
 dictate                 # start or stop dictation
-dictate words           # dictionary
+dictate words           # list dictionary
+dictate words Hyprland  # add a word you say often
 dictate config set KEY value
 ```
 

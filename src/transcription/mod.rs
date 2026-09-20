@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 
 pub mod online;
@@ -140,6 +141,51 @@ pub fn sanitize_language(raw: &str) -> Option<String> {
     Some(lang)
 }
 
+const MAX_STT_HINTS: usize = 80;
+
+/// Dictionary terms safe to send as STT hints (Mistral `context_bias`, Groq `prompt`,
+/// Deepgram `keyterm`). Drops empties, commas, and query-breaking characters.
+pub fn stt_hint_terms(terms: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for term in terms {
+        let term = term.trim();
+        if term.is_empty() || term.chars().count() > dictate::word_store::MAX_WORD_LEN {
+            continue;
+        }
+        if term.contains(',')
+            || term
+                .bytes()
+                .any(|b| b == b'&' || b == b'=' || b == b'%' || b == b'?' || b.is_ascii_control())
+        {
+            continue;
+        }
+        if seen.insert(term.to_lowercase()) {
+            out.push(term.to_string());
+        }
+        if out.len() >= MAX_STT_HINTS {
+            break;
+        }
+    }
+    out
+}
+
+pub fn whisper_prompt(terms: &[String]) -> Option<String> {
+    let hints = stt_hint_terms(terms);
+    if hints.is_empty() {
+        None
+    } else {
+        Some(hints.join(", "))
+    }
+}
+
+pub fn append_deepgram_keyterms(url: &mut String, terms: &[String]) {
+    for term in stt_hint_terms(terms) {
+        url.push_str("&keyterm=");
+        url.push_str(&encode_model(&term));
+    }
+}
+
 impl TranscriptionFactory {
     /// Shared constructor for the three OpenAI-compatible online providers.
     ///
@@ -168,6 +214,7 @@ impl TranscriptionFactory {
             base_url,
             auth_style,
             dialect,
+            vocabulary: crate::text_processing::preferred_vocabulary(&config.text_processing),
         })
     }
 
@@ -359,5 +406,39 @@ mod tests {
             encode_model("m&smart_format=false"),
             "m%26smart_format%3Dfalse"
         );
+    }
+
+    #[test]
+    fn stt_hint_terms_keep_names_and_drop_query_breakers() {
+        let terms = [
+            "Hyprland".to_string(),
+            "  Supabase ".to_string(),
+            "bad&x=1".to_string(),
+            "a,b".to_string(),
+            String::new(),
+            "hyprland".to_string(),
+        ];
+        assert_eq!(
+            stt_hint_terms(&terms),
+            vec!["Hyprland".to_string(), "Supabase".to_string()]
+        );
+        assert_eq!(
+            whisper_prompt(&terms).as_deref(),
+            Some("Hyprland, Supabase")
+        );
+        let mut url = "https://api.deepgram.com/v1/listen?model=nova-3".to_string();
+        append_deepgram_keyterms(&mut url, &terms);
+        assert_eq!(
+            url,
+            "https://api.deepgram.com/v1/listen?model=nova-3&keyterm=Hyprland&keyterm=Supabase"
+        );
+    }
+
+    #[test]
+    fn deepgram_keyterms_encode_spaces_in_phrases() {
+        let mut url = String::from("https://example.test/v1/listen?");
+        append_deepgram_keyterms(&mut url, &["Wispr Flow".to_string()]);
+        assert!(url.contains("keyterm=Wispr%20Flow"));
+        assert!(!url.contains("keyterm=Wispr Flow"));
     }
 }

@@ -138,8 +138,8 @@ impl PolishConfig {
 pub struct TextProcessingConfig {
     #[serde(default)]
     pub dictionary: HashMap<String, String>,
-    /// Words/terms the user cares about. These are applied with conservative
-    /// fuzzy matching for live typing and also passed to polish prompts.
+    /// Words/terms the user cares about. Fed to STT as hints, fuzzy-matched
+    /// after transcription, and included in polish prompts.
     #[serde(default)]
     pub preferred_words: Vec<String>,
     #[serde(default)]

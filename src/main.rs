@@ -40,6 +40,7 @@ mod transcription;
 mod typing;
 mod update;
 mod wav;
+mod words_cli;
 
 #[cfg(test)]
 mod test_utils;
@@ -119,8 +120,12 @@ enum Commands {
         #[command(subcommand)]
         command: Box<ConfigCommand>,
     },
-    /// Edit dictionary
-    Words,
+    /// List or add often-spoken words
+    Words {
+        /// Words to add (omit to list them)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        add: Vec<String>,
+    },
     /// Print compositor shortcut snippets
     #[command(hide = true)]
     Shortcuts(ShortcutArgs),
@@ -562,42 +567,14 @@ async fn main() -> Result<()> {
                 }
                 return Ok(());
             }
-            Commands::Words => {
+            Commands::Words { add } => {
                 let text_path = Config::text_config_path_for_env_file(&envfile);
                 #[cfg(feature = "words-ui")]
-                {
+                if add.is_empty() {
                     dictate::words_ui::run(&text_path)?;
+                    return Ok(());
                 }
-                #[cfg(not(feature = "words-ui"))]
-                {
-                    if let Some(parent) = text_path.parent() {
-                        config_cli::ensure_private_dir(parent)?;
-                    }
-                    if !text_path.exists() {
-                        config_cli::write_private_file(
-                            &text_path,
-                            b"preferred_words = []\n\n[dictionary]\n",
-                        )?;
-                    } else {
-                        config_cli::restrict_perms(&text_path);
-                    }
-                    let editor = platform::default_editor();
-                    #[cfg(windows)]
-                    let (program, args) = config_cli::editor_argv(&editor, "notepad");
-                    #[cfg(not(windows))]
-                    let (program, args) = config_cli::editor_argv(&editor, "vi");
-                    let status = std::process::Command::new(&program)
-                        .args(&args)
-                        .arg(&text_path)
-                        .status()
-                        .map_err(|e| anyhow::anyhow!("failed to run $EDITOR ({editor}): {e}"))?;
-                    if !status.success() {
-                        anyhow::bail!("Editor exited with status {status}");
-                    }
-                    eprintln!(
-                        "Tip: build with `cargo build --release --features words-ui` for the Dictionary GUI."
-                    );
-                }
+                words_cli::run(&text_path, add.as_slice())?;
                 return Ok(());
             }
             Commands::Autostart { command } => {

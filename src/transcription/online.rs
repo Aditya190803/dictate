@@ -33,6 +33,7 @@ pub struct OnlineProviderOptions {
     pub base_url: String,
     pub auth_style: AuthStyle,
     pub dialect: ApiDialect,
+    pub vocabulary: Vec<String>,
 }
 
 /// Provider that transcribes audio via a REST API (Mistral, Groq, etc.).
@@ -88,6 +89,13 @@ impl OnlineTranscriptionProvider {
                 if let Some(lang) = language.and_then(super::sanitize_language) {
                     form = form.text("language", lang);
                 }
+                if self.options.provider_name == "Mistral" {
+                    for term in super::stt_hint_terms(&self.options.vocabulary) {
+                        form = form.text("context_bias", term);
+                    }
+                } else if let Some(prompt) = super::whisper_prompt(&self.options.vocabulary) {
+                    form = form.text("prompt", prompt);
+                }
 
                 self.client.post(&url).multipart(form)
             }
@@ -109,6 +117,7 @@ impl OnlineTranscriptionProvider {
                     url.push_str("&language=");
                     url.push_str(&lang);
                 }
+                super::append_deepgram_keyterms(&mut url, &self.options.vocabulary);
 
                 self.client
                     .post(&url)
@@ -271,6 +280,7 @@ mod tests {
             base_url: "https://example.test/v1".to_string(),
             auth_style: AuthStyle::Bearer,
             dialect: ApiDialect::OpenAiCompatible,
+            vocabulary: Vec::new(),
         }
     }
 
@@ -305,6 +315,7 @@ mod tests {
             base_url: server.url(),
             auth_style: AuthStyle::Token,
             dialect: ApiDialect::Deepgram,
+            vocabulary: Vec::new(),
         })
         .unwrap();
 
@@ -341,6 +352,40 @@ mod tests {
             base_url: server.url(),
             auth_style: AuthStyle::Token,
             dialect: ApiDialect::Deepgram,
+            vocabulary: Vec::new(),
+        })
+        .unwrap();
+
+        provider
+            .transcribe_with_language(vec![0u8; 32], Some("auto".to_string()))
+            .await
+            .unwrap();
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn deepgram_dialect_sends_dictionary_keyterms() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/listen")
+            .match_query(mockito::Matcher::Exact(
+                "model=nova-3&smart_format=true&keyterm=Hyprland".into(),
+            ))
+            .with_status(200)
+            .with_body(r#"{"results":{"channels":[{"alternatives":[{"transcript":"ok"}]}]}}"#)
+            .create_async()
+            .await;
+
+        let provider = OnlineTranscriptionProvider::new(OnlineProviderOptions {
+            provider_name: "Deepgram",
+            api_key: "dg-key".to_string(),
+            timeout_seconds: 30,
+            max_retries: 0,
+            model: "nova-3".to_string(),
+            base_url: server.url(),
+            auth_style: AuthStyle::Token,
+            dialect: ApiDialect::Deepgram,
+            vocabulary: vec!["Hyprland".into(), "bad&x=1".into()],
         })
         .unwrap();
 
@@ -394,6 +439,7 @@ mod tests {
             base_url: server.url(),
             auth_style: AuthStyle::Token,
             dialect: ApiDialect::Deepgram,
+            vocabulary: Vec::new(),
         })
         .unwrap();
 

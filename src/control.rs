@@ -34,7 +34,7 @@ pub enum Slot {
     Live,
     /// `dictate --daemon --mode smart`
     Smart,
-    /// The Windows hotkey agent (`dictate hotkeys`). Constructed only on Windows —
+    /// The Windows hotkey agent (installed by `dictate setup`). Constructed only on Windows —
     /// Linux uses systemd user services instead of a resident agent.
     #[cfg_attr(not(windows), allow(dead_code))]
     Hotkeys,

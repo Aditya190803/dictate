@@ -205,7 +205,7 @@ dictate doctor
 | `%APPDATA%\dictate\text.toml` | Dictionary, snippets, cleanup, `[polish]` |
 | `%APPDATA%\dictate\` | Models, history, scratchpad |
 
-`SHORTCUT_OUTPUT` on Windows: `type` = Win32 `SendInput` (Unicode) into the focused window · `paste` = clipboard + Ctrl+V · `clipboard` = Win32 clipboard · `stdout` = print. Command mode (`dictate --command`) reads the Win32 clipboard directly.
+`SHORTCUT_OUTPUT` on Windows: `type` = Win32 `SendInput` (Unicode) into the focused window · `paste` = clipboard + Ctrl+V · `clipboard` = Win32 clipboard · `stdout` = print. Clipboard commands run on the same shortcut when you copied text first.
 
 ### Shortcuts
 

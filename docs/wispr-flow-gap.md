@@ -10,7 +10,7 @@ Legend: **Partial** = similar idea, weaker or different UX. **Done** = shipped i
 
 | Flow | dictate |
 |------|---------|
-| macOS / Windows native apps | Linux (Wayland); Windows via `dictate hotkeys` agent (`RegisterHotKey`, see `docs/windows.md`); no macOS app |
+| macOS / Windows native apps | Linux (Wayland); Windows via a hotkey agent from `dictate setup` (`RegisterHotKey`, see `docs/windows.md`); no macOS app |
 | iOS / Android | — |
 | Browser / web dictation | — |
 | Linux / WSL / terminal | **Native** CLI + compositor shortcuts |
@@ -21,12 +21,12 @@ Legend: **Partial** = similar idea, weaker or different UX. **Done** = shipped i
 
 | Flow | dictate |
 |------|---------|
-| **Flow Bar** | Daemon (beeps / terminal feedback); Windows global hotkeys via `dictate hotkeys` agent |
-| **Scratchpad** | **Done:** `dictate scratchpad` → `~/.local/share/dictate/scratchpad.md` |
-| **Hands-free** | **Done:** live typing daemon on `SUPER,R`; smart paste available on a second shortcut |
-| Onboarding | `dictate setup`, `dictate config wizard`, `dictate doctor` |
+| **Flow Bar** | Daemon (beeps / terminal feedback); Windows global hotkeys via `dictate setup` |
+| **Scratchpad** | **Done:** `~/.local/share/dictate/scratchpad.md` |
+| **Hands-free** | **Done:** one shortcut (`SUPER,R`; Windows `CTRL,ALT,R`) starts and stops dictation |
+| Onboarding | `dictate setup`, `dictate doctor` |
 | **Sync across devices** | — (local only) |
-| Transcript **history** | **Done:** `dictate history list|clear` → `history.jsonl` (`[history] enabled` in text.toml) |
+| Transcript **history** | **Done:** `history.jsonl` (`[history] enabled` in text.toml) |
 
 ---
 

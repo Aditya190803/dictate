@@ -64,7 +64,7 @@ SHORTCUT_KEY_LIVE=CTRL,ALT,R
 | `clipboard` | Sets the Win32 clipboard |
 | `stdout` | Prints |
 
-Clipboard command mode (`dictate --command`) reads the Win32 clipboard directly — no `wl-paste`.
+Clipboard commands run on the same shortcut when you copied text first — no `wl-paste`.
 
 ## Shortcuts
 

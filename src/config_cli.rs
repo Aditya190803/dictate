@@ -272,7 +272,6 @@ fn normalize_config_key(key: &str) -> String {
         "beep_volume" => "BEEP_VOLUME",
         "shortcut" | "shortcut_key" => "SHORTCUT_KEY",
         "shortcut_key_live" | "shortcut_live" | "shortcut-live" => "SHORTCUT_KEY_LIVE",
-        "shortcut_key_smart" | "shortcut_smart" | "shortcut-smart" => "SHORTCUT_KEY_SMART",
         "desktop" | "shortcut_desktop" => "SHORTCUT_DESKTOP",
         "mode" | "output_mode" => "SHORTCUT_OUTPUT",
         other => return other.to_uppercase(),
@@ -575,11 +574,6 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
         .or(config.shortcut_key.as_deref())
         .unwrap_or(default_shortcut_key());
     println!("✓ Shortcut: {key} → dictate");
-    if let Some(smart) = config.shortcut_key_smart.as_deref() {
-        if smart != key {
-            println!("  Also bound: {smart} → same dictation");
-        }
-    }
     println!(
         "✓ Words UI: run `dictate words` to edit {}",
         Config::text_config_path_for_env_file(env_path).display()
@@ -707,20 +701,14 @@ fn check_platform_dependencies(_config: &Config) {
 fn check_platform_dependencies(config: &Config) {
     println!("✓ Typing and clipboard are built in (no ydotool or wl-clipboard needed)");
 
-    for (label, key) in [
-        (
-            "SHORTCUT_KEY",
-            config
-                .shortcut_key_live
-                .as_deref()
-                .or(config.shortcut_key.as_deref()),
-        ),
-        ("SHORTCUT_KEY_SMART", config.shortcut_key_smart.as_deref()),
-    ] {
-        let Some(key) = key else { continue };
+    if let Some(key) = config
+        .shortcut_key_live
+        .as_deref()
+        .or(config.shortcut_key.as_deref())
+    {
         match platform::hotkeys::parse(key) {
-            Ok(_) => println!("✓ {label} '{key}' is a usable Windows shortcut"),
-            Err(e) => println!("✗ {label} '{key}': {e}"),
+            Ok(_) => println!("✓ SHORTCUT_KEY '{key}' is a usable Windows shortcut"),
+            Err(e) => println!("✗ SHORTCUT_KEY '{key}': {e}"),
         }
     }
 
@@ -930,7 +918,10 @@ fn install_autostart_services() -> Result<()> {
     }
 
     println!("Warm Dictate daemon installed and started:");
-    println!("  {DAEMON_SERVICE}: {}", service_path(DAEMON_SERVICE).display());
+    println!(
+        "  {DAEMON_SERVICE}: {}",
+        service_path(DAEMON_SERVICE).display()
+    );
     println!("Shortcuts now signal a warm daemon instead of cold-starting it.");
     Ok(())
 }
@@ -988,17 +979,14 @@ pub fn run_autostart_command(command: &AutostartCommand) -> Result<()> {
 #[cfg(windows)]
 pub async fn run_hotkey_agent(warm: bool, env_path: &Path) -> Result<()> {
     let mut control = crate::control::Control::start(Slot::Hotkeys)?;
-    let keys = shortcut_keys_to_bind(env_path)?;
-
-    let mut specs = Vec::new();
-    for (i, key) in keys.iter().enumerate() {
-        let spec = platform::hotkeys::parse(key)
-            .map_err(|e| anyhow!("shortcut '{key}': {e}"))?;
-        specs.push((i as i32, spec, key.clone()));
-    }
+    let key = shortcut_key_to_bind(env_path)?;
+    let spec = platform::hotkeys::parse(&key).map_err(|e| anyhow!("shortcut '{key}': {e}"))?;
+    let specs = vec![(0, spec, key.clone())];
 
     if warm {
-        let already = dictation_slots().iter().any(|slot| control::is_running(*slot));
+        let already = dictation_slots()
+            .iter()
+            .any(|slot| control::is_running(*slot));
         if !already {
             let mut argv = toggle_daemon_argv();
             argv.insert(1, "--idle-on-start".to_string());
@@ -1009,9 +997,7 @@ pub async fn run_hotkey_agent(warm: bool, env_path: &Path) -> Result<()> {
     }
 
     println!("Dictate hotkey agent listening:");
-    for key in &keys {
-        println!("  {key} → dictate");
-    }
+    println!("  {key} → dictate");
 
     std::thread::spawn(move || {
         let result = platform::hotkeys::run_loop(&specs, |_id| {
@@ -1080,19 +1066,11 @@ fn gnome_binding(key: &str) -> String {
     format!("{}{}", mods.join(""), keycap)
 }
 
-fn shortcut_keys_to_bind(env_path: &Path) -> Result<Vec<String>> {
+fn shortcut_key_to_bind(env_path: &Path) -> Result<String> {
     let path = env_path.to_path_buf();
-    let default = default_shortcut_key();
-    let primary = read_config_value(&path, "SHORTCUT_KEY_LIVE")?
+    Ok(read_config_value(&path, "SHORTCUT_KEY_LIVE")?
         .or(read_config_value(&path, "SHORTCUT_KEY")?)
-        .unwrap_or_else(|| default.to_string());
-    let mut keys = vec![primary.clone()];
-    if let Some(smart) = read_config_value(&path, "SHORTCUT_KEY_SMART")? {
-        if smart != primary {
-            keys.push(smart);
-        }
-    }
-    Ok(keys)
+        .unwrap_or_else(|| default_shortcut_key().to_string()))
 }
 
 /// Write a GNOME custom-keybinding for `dictate`.
@@ -1102,8 +1080,7 @@ pub fn install_gnome_shortcuts(env_path: &Path) -> Result<()> {
     let dictate_path = format!("{base}/dictate/");
     let live_path = format!("{base}/dictate-live/");
     let smart_path = format!("{base}/dictate-smart/");
-    let keys = shortcut_keys_to_bind(env_path)?;
-    let primary = keys.first().cloned().unwrap_or_else(|| default_shortcut_key().to_string());
+    let primary = shortcut_key_to_bind(env_path)?;
 
     let list = ProcessCommand::new("gsettings")
         .args(["get", schema, "custom-keybindings"])

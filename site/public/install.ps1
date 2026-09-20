@@ -147,7 +147,6 @@ function Write-DefaultConfig {
       "BEEP_VOLUME=0.1",
       "# Win+R is reserved by Windows — defaults use Ctrl+Alt+R",
       "SHORTCUT_KEY_LIVE=CTRL,ALT,R",
-      "SHORTCUT_KEY_SMART=CTRL,ALT,SHIFT,R",
       "SHORTCUT_OUTPUT=type"
     ) -join "`r`n" | Set-Content -Path $ConfigFile -Encoding utf8
     Info "Created default config at $ConfigFile"

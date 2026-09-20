@@ -65,11 +65,8 @@ pub struct Config {
     /// Saved for shortcut generation / install.sh (not used at runtime except default_pipe_to).
     pub shortcut_key: Option<String>,
     pub shortcut_key_live: Option<String>,
-    /// Legacy second shortcut; read by `config_cli` doctor/get and written by
-    /// the wizard, so not dead.
-    pub shortcut_key_smart: Option<String>,
     pub shortcut_desktop: Option<String>,
-    /// Voice corrections on typed/pasted session text (smart path, VAD segments).
+    /// Voice corrections on typed session text (`scratch that`, `no I mean …`).
     pub context_editing: bool,
     pub context_editing_max_delete_chars: usize,
     pub context_editing_max_delete_words: usize,
@@ -115,7 +112,6 @@ impl Default for Config {
             default_pipe_to: None,
             shortcut_key: None,
             shortcut_key_live: None,
-            shortcut_key_smart: None,
             shortcut_desktop: None,
             context_editing: true,
             context_editing_max_delete_chars: 300,
@@ -227,7 +223,6 @@ impl Config {
             ),
             shortcut_key: std::env::var("SHORTCUT_KEY").ok(),
             shortcut_key_live: std::env::var("SHORTCUT_KEY_LIVE").ok(),
-            shortcut_key_smart: std::env::var("SHORTCUT_KEY_SMART").ok(),
             shortcut_desktop: std::env::var("SHORTCUT_DESKTOP").ok(),
             context_editing: env_bool_or("CONTEXT_EDITING", true),
             context_editing_max_delete_chars: env_parse_or(
@@ -250,7 +245,7 @@ impl Config {
         self.text_processing.history.enabled
     }
 
-    /// Mistral LLM for unrecognized `--command` voice instructions (text.toml).
+    /// LLM for unrecognized clipboard-command voice instructions (text.toml).
     pub fn command_mode_uses_llm(&self) -> bool {
         self.text_processing.command_mode.use_llm && self.polish_available()
     }
@@ -339,7 +334,7 @@ impl Config {
     fn is_retired_env_key(key: &str) -> bool {
         matches!(
             key.trim().to_uppercase().as_str(),
-            "ENABLE_OVERLAY" | "DICTATE_OVERLAY_SOCKET"
+            "ENABLE_OVERLAY" | "DICTATE_OVERLAY_SOCKET" | "SHORTCUT_KEY_SMART"
         )
     }
 
@@ -627,6 +622,21 @@ mod tests {
         let saved = std::fs::read_to_string(&path).unwrap();
         assert!(!saved.contains("ENABLE_OVERLAY"));
         assert!(saved.contains("MISTRAL_API_KEY"));
+    }
+
+    #[test]
+    fn prune_retired_env_keys_drops_shortcut_key_smart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(
+            &path,
+            "SHORTCUT_KEY_LIVE=CTRL,ALT,R\nSHORTCUT_KEY_SMART=CTRL,ALT,SHIFT,R\n",
+        )
+        .unwrap();
+        assert!(Config::prune_retired_env_keys(&path).unwrap());
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("SHORTCUT_KEY_SMART"));
+        assert!(saved.contains("SHORTCUT_KEY_LIVE"));
     }
 
     #[test]

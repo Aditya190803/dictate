@@ -11,7 +11,7 @@ Open-source, local-first, CLI-native. Ignore billing, teams, enterprise complian
 | 1 | **Local snippets** | `text.toml` → `[[snippets]]` |
 | 2 | **Personal dictionary** | `text.toml` → `[dictionary]` |
 | 3 | **Text cleanup** | `text.toml` → `[cleanup]` |
-| 4 | **Command mode** | `dictate --command` (clipboard + local transforms) |
+| 4 | **Command mode** | `DICTATE_PROFILE=command`, or the same shortcut when clipboard already has text |
 | 5 | **Developer dictation modes** | `--dictation-mode` (markdown, git, terminal, code symbols, paths) |
 | — | **Default dictation** | One shortcut: type as you speak, voice edits, polish on pause |
 | — | **LLM polish** | `text.toml` → `[polish]` (per utterance; also whole-clip on one-shot) |
@@ -25,8 +25,6 @@ audio → transcription → dictionary → inline fixes → snippets → cleanup
 ```
 
 **Initial MVP** (snippets, dictionary, order, tests): done in `src/text_processing.rs`.
-
-**CLI simplification:** profile drives `batch-mode` / `transcription-mode` in config wizard (PR #2).
 
 ## Next (recommended order)
 

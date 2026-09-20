@@ -58,7 +58,7 @@ pub struct Config {
     pub enable_audio_feedback: bool,
     pub beep_volume: f32,
     pub text_processing: TextProcessingConfig,
-    /// User-facing behavior profile (live typing vs smart paste vs batch clip).
+    /// User-facing behavior profile (dictation vs clipboard-command vs batch clip).
     pub profile: DictateProfile,
     /// Default `--pipe-to` when the CLI omits it (from SHORTCUT_OUTPUT in .env).
     pub default_pipe_to: Option<Vec<String>>,
@@ -303,10 +303,7 @@ impl Config {
 
     /// Realtime daemons launched from shortcuts should listen immediately on the first press.
     pub fn realtime_daemon_active_on_start(&self) -> bool {
-        matches!(
-            self.profile,
-            DictateProfile::Segmented | DictateProfile::LiveTyping
-        ) && self.use_mistral_realtime_stt()
+        self.profile.is_dictation() && self.use_mistral_realtime_stt()
     }
 
     /// Mistral realtime WebSocket STT (default segmented + legacy live typing).
@@ -330,10 +327,7 @@ impl Config {
     }
 
     fn realtime_capable_profile(&self) -> bool {
-        matches!(
-            self.profile,
-            DictateProfile::Segmented | DictateProfile::LiveTyping
-        )
+        self.profile.is_dictation()
     }
 
     /// Effective pipe command: CLI override or configured default.
@@ -475,12 +469,6 @@ impl Config {
                     "Unsupported TRANSCRIPTION_MODE: {other}. Supported modes: auto, realtime, batch"
                 );
             }
-        }
-
-        if self.profile == DictateProfile::SmartPaste && !self.polish_available() {
-            anyhow::bail!(
-                "DICTATE_PROFILE=smart_paste requires a polish backend (MISTRAL_API_KEY or Ollama)."
-            );
         }
 
         if self.mistral_realtime_delay_ms == 0 {

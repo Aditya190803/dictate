@@ -3,7 +3,9 @@
 use crate::beep::{BeepPlayer, BeepType};
 use crate::command_mode;
 use crate::config::Config;
-use crate::context_session::{handle_final_segment, preprocess_insert};
+use crate::context_session::{
+    edit_policy, handle_final_segment, preprocess_insert, replace_typed_suffix,
+};
 use crate::intent::{detect_intent, DictationIntent};
 use crate::llm_polish::{handle_polish_failure, polish_segment};
 use crate::profile::POLISH_CONTEXT_CHARS;
@@ -80,8 +82,16 @@ pub async fn emit_finalized_segment(
                         .await?;
                 }
             }
-            _ => {
+            other if config.context_editing => {
                 handle_final_segment(&backend, &mut buffer, config, text, dictation_mode).await?;
+                let _ = other;
+            }
+            _ => {
+                let processed = crate::text_processing::process_text(text, &config.text_processing);
+                let processed =
+                    crate::developer_modes::apply_developer_mode(&processed, dictation_mode);
+                backend.type_text(&processed).await?;
+                buffer.append_typed(&processed);
             }
         }
     } else if config.context_editing {
@@ -99,6 +109,64 @@ pub async fn emit_finalized_segment(
         config.save_transcript_history(),
     );
 
+    beep_player.play_async(BeepType::Success).await.ok();
+    Ok(())
+}
+
+/// Polish (and rewrite) text that was already typed as live deltas.
+pub async fn finalize_live_utterance(
+    config: &Config,
+    pipe_command: Option<Vec<String>>,
+    session_buffer: &tokio::sync::Mutex<TranscriptBuffer>,
+    utterance_start: &mut usize,
+    dictation_mode: &str,
+    beep_player: &BeepPlayer,
+) -> Result<()> {
+    let backend = OutputBackend::new(pipe_command);
+    let mut buffer = session_buffer.lock().await;
+    let start = (*utterance_start).min(buffer.text().len());
+    let typed = buffer.text()[start..].to_string();
+    if typed.trim().is_empty() {
+        *utterance_start = buffer.text().len();
+        return Ok(());
+    }
+
+    if !matches!(
+        detect_intent(typed.trim()),
+        DictationIntent::InsertText(_)
+    ) {
+        *utterance_start = buffer.text().len();
+        return Ok(());
+    }
+
+    let polish = &config.text_processing.polish;
+    let replacement = if polish.effective_enabled(true) && config.polish_available() {
+        let prior = buffer.text()[..start].to_string();
+        eprintln!("✨ Polishing…");
+        match polish_segment(&typed, &prior, config, polish, dictation_mode).await {
+            Ok(p) => p,
+            Err(e) => handle_polish_failure(polish, &typed, &e),
+        }
+    } else {
+        typed.clone()
+    };
+
+    if replacement != typed {
+        replace_typed_suffix(
+            &backend,
+            &mut buffer,
+            &typed,
+            &replacement,
+            edit_policy(config),
+        )
+        .await?;
+    }
+    *utterance_start = buffer.text().len();
+    let _ = crate::history::append_transcript(
+        &typed,
+        config.profile.as_str(),
+        config.save_transcript_history(),
+    );
     beep_player.play_async(BeepType::Success).await.ok();
     Ok(())
 }

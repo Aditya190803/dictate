@@ -1,9 +1,9 @@
-import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { Geist, JetBrains_Mono, Newsreader } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({
-  variable: "--font-inter",
+const geist = Geist({
+  variable: "--font-geist",
   subsets: ["latin"],
   display: "swap",
 });
@@ -14,40 +14,61 @@ const jetbrainsMono = JetBrains_Mono({
   display: "swap",
 });
 
+const newsreader = Newsreader({
+  variable: "--font-newsreader",
+  subsets: ["latin"],
+  style: ["normal", "italic"],
+  display: "swap",
+});
+
+const DESCRIPTION =
+  "Press a key, talk, and the words land in the focused window. A daemon-friendly speech-to-text CLI for Wayland Linux and Windows, with realtime transcription and a fully offline mode.";
+
 export const metadata: Metadata = {
-  title: "dictate — Wayland Speech-to-Text",
-  description:
-    "Press a keybind and get instant text output. A signal-driven CLI for Linux with Mistral realtime STT by default and BATCH_MODE as an opt-out.",
+  metadataBase: new URL("https://dictate.adityamer.dev"),
+  title: "dictate — speech to text for Linux and Windows",
+  description: DESCRIPTION,
   keywords: [
-    "speech-to-text", "wayland", "linux", "cli", "whisper",
-    "dictation", "voice-to-text", "transcription", "rust", "pipewire",
+    "speech-to-text", "dictation", "voice typing", "wayland", "linux",
+    "windows", "cli", "whisper", "voxtral", "deepgram", "transcription", "rust",
   ],
+  authors: [{ name: "Aditya Mer" }],
   openGraph: {
-    title: "dictate — Wayland Speech-to-Text",
-    description:
-      "Press a keybind, speak, get text. Mistral realtime STT by default for Wayland Linux desktops.",
+    title: "dictate — speech to text for Linux and Windows",
+    description: DESCRIPTION,
     type: "website",
     url: "https://dictate.adityamer.dev",
+    siteName: "dictate",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "dictate — speech to text for Linux and Windows",
+    description: DESCRIPTION,
   },
 };
 
+export const viewport: Viewport = {
+  themeColor: "#fcfcfa",
+};
+
+/* Marks the document as scripted so the scroll-reveal starting states
+   (gated on `html.js` in CSS) apply before first paint. If scripts never
+   run, every section simply renders at full opacity. */
+const BOOT = `(function(){document.documentElement.classList.add('js')})()`;
+
 export default function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
     <html
       lang="en"
-      className={`${inter.variable} ${jetbrainsMono.variable}`}
+      className={`${geist.variable} ${jetbrainsMono.variable} ${newsreader.variable}`}
       suppressHydrationWarning
     >
-      <body
-        style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}
-        suppressHydrationWarning
-      >
-        {children}
-      </body>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: BOOT }} />
+      </head>
+      <body suppressHydrationWarning>{children}</body>
     </html>
   );
 }

@@ -1,265 +1,282 @@
-"use client";
-
-import { useRef, useEffect } from "react";
 import Link from "next/link";
-import { gsap } from "gsap";
-import { ScrollTrigger } from "gsap/ScrollTrigger";
+import { GithubLogo } from "@phosphor-icons/react/dist/ssr";
+import { Badge } from "./components/ui/badge";
+import { Button } from "./components/ui/button";
+import { Kbd } from "./components/ui/kbd";
+import { Separator } from "./components/ui/separator";
 import {
-  Lightning,
-  Plugs,
-  Broadcast,
-  Stack,
-  Monitor,
-  ShieldCheck,
-} from "@phosphor-icons/react";
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "./components/ui/table";
 import CopyButton from "./components/CopyButton";
+import FadeIn from "./components/FadeIn";
+import InstallTabs from "./components/InstallTabs";
 
-gsap.registerPlugin(ScrollTrigger);
+const REPO = "https://github.com/Aditya190803/dictate";
 
-const CURL_CMD = "curl -fsSL https://dictate.adityamer.dev/install.sh | sh";
+const AGENT_PROMPT =
+  "Read https://dictate.adityamer.dev/INSTALL.md and follow it step by step to install and configure dictate on this machine. Ask me the setup questions first, then execute everything non-interactively using 'dictate config set'.";
 
-const AGENT_PROMPT = `Read https://dictate.adityamer.dev/INSTALL.md and follow it step by step to install and configure dictate on this machine. Ask me the setup questions first, then execute everything non-interactively using 'dictate config set'.`;
+const STEPS = [
+  { n: "01", t: "Bind a key", d: "One shortcut per mode, registered system-wide." },
+  { n: "02", t: "Speak", d: "A warm daemon holds the model and socket. No cold start." },
+  { n: "03", t: "Press again", d: "The same key stops the take and finalises it." },
+  { n: "04", t: "Text lands", d: "Typed, pasted, copied, or written to stdout." },
+];
 
-const FLOW_STEPS = [
-  { num: "01", title: "Bind a key", desc: "Assign a keybind in your Wayland compositor. Hyprland, Niri, GNOME, KDE, Sway.", code: "bind = SUPER, R, exec, ..." },
-  { num: "02", title: "Speak", desc: "dictate records from PipeWire. A beep confirms recording has started.", code: "♫ recording started" },
-  { num: "03", title: "Signal", desc: "Press the keybind again. SIGUSR1 stops realtime or finishes a batch clip.", code: "pkill --signal SIGUSR1 dictate" },
-  { num: "04", title: "Get text", desc: "Transcribed text is piped to stdout. Send it to clipboard, type it, or pipe it anywhere.", code: "stdout → wl-copy | ydotool" },
+const PROVIDERS = [
+  { name: "Mistral", model: "voxtral-mini-transcribe-realtime", realtime: true, local: false },
+  { name: "Deepgram", model: "nova-3", realtime: true, local: false },
+  { name: "Groq", model: "whisper-large-v3-turbo", realtime: false, local: false },
+  { name: "Whisper", model: "ggml, on-device", realtime: false, local: true },
 ];
 
 const FEATURES = [
-  { icon: Lightning, title: "Signal-driven", desc: "SIGUSR1 triggers transcription. No polling, no wasted cycles. The process sleeps until you need it." },
-  { icon: Plugs, title: "Pipe anywhere", desc: "--pipe-to sends output to wl-copy, ydotool, sed, or any command. Compose however you like." },
-  { icon: Broadcast, title: "Realtime by default", desc: "Mistral Voxtral realtime WebSocket STT from the keyboard shortcut. BATCH_MODE=true opts out." },
-  { icon: Stack, title: "Multi-provider", desc: "Mistral (default), Groq, or local Whisper. Choose what works for your setup and privacy needs." },
-  { icon: Monitor, title: "Wayland native", desc: "PipeWire audio capture. Works with Hyprland, Niri, GNOME, KDE, Sway, and more." },
-  { icon: ShieldCheck, title: "Privacy option", desc: "Local Whisper mode. Your audio never leaves your machine. Download GGML models and transcribe offline." },
+  { t: "Stdout first", d: "--pipe-to hands text to any command — wl-copy, ydotool, sed, your own script." },
+  { t: "Two platforms, one config", d: "Same keys on both. PipeWire/ydotool on Wayland, WASAPI/Win32 on Windows." },
+  { t: "Idle costs nothing", d: "The daemon sleeps until a shortcut arrives. No polling, no background work." },
+  { t: "Polish is separate", d: "A text model cleans up after recognition — OpenCode Zen, Mistral, or local Ollama." },
+  { t: "Your vocabulary", d: "A dictionary of names and mishearings is applied before text reaches the screen." },
+  { t: "Fully offline option", d: "Local Whisper keeps audio on the machine. Nothing uploaded, no key needed." },
 ];
 
-export default function Home() {
-  const containerRef = useRef<HTMLElement>(null);
-
-  const heroH1Ref = useRef<HTMLHeadingElement>(null);
-  const heroDescRef = useRef<HTMLParagraphElement>(null);
-  const heroWaveformRef = useRef<HTMLDivElement>(null);
-  const heroInstallRef = useRef<HTMLDivElement>(null);
-  const heroAgentRef = useRef<HTMLDivElement>(null);
-  const heroScriptRef = useRef<HTMLDivElement>(null);
-  const howHeadRef = useRef<HTMLDivElement>(null);
-  const flowRef = useRef<HTMLDivElement>(null);
-  const featHeadRef = useRef<HTMLDivElement>(null);
-  const bentoRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (prefersReducedMotion) return;
-
-    const ctx = gsap.context(() => {
-      // Left column: h1 → desc → waveform
-      const heroTextEls = [heroH1Ref.current, heroDescRef.current, heroWaveformRef.current].filter(Boolean);
-      if (heroTextEls.length > 0) {
-        gsap.fromTo(heroTextEls,
-          { opacity: 0, y: 32 },
-          { opacity: 1, y: 0, duration: 0.8, stagger: 0.12, ease: "power3.out", clearProps: "all" }
-        );
-      }
-
-      // Right column: install panel slides up with scale
-      if (heroInstallRef.current) {
-        gsap.fromTo(heroInstallRef.current,
-          { opacity: 0, y: 40, scale: 0.97 },
-          { opacity: 1, y: 0, scale: 1, duration: 0.9, delay: 0.3, ease: "power3.out", clearProps: "all" }
-        );
-      }
-
-      const heads = [howHeadRef.current, featHeadRef.current].filter(Boolean);
-      heads.forEach((el) => {
-        gsap.fromTo(el,
-          { opacity: 0, y: 20 },
-          { opacity: 1, y: 0, duration: 0.6, ease: "power2.out",
-            scrollTrigger: { trigger: el, start: "top 85%", toggleActions: "play none none none" },
-            clearProps: "all"
-          }
-        );
-      });
-
-      if (flowRef.current) {
-        gsap.fromTo(flowRef.current.children,
-          { opacity: 0, y: 28 },
-          { opacity: 1, y: 0, duration: 0.55, stagger: 0.12, ease: "power2.out",
-            scrollTrigger: { trigger: flowRef.current, start: "top 80%", toggleActions: "play none none none" },
-            clearProps: "all"
-          }
-        );
-      }
-
-      if (bentoRef.current) {
-        gsap.fromTo(bentoRef.current.children,
-          { opacity: 0, y: 20, scale: 0.97 },
-          { opacity: 1, y: 0, scale: 1, duration: 0.5, stagger: 0.08, ease: "power2.out",
-            scrollTrigger: { trigger: bentoRef.current, start: "top 80%", toggleActions: "play none none none" },
-            clearProps: "all"
-          }
-        );
-      }
-    }, containerRef);
-
-    return () => ctx.revert();
-  }, []);
-
+function Eyebrow({ children }: { children: React.ReactNode }) {
   return (
-    <main ref={containerRef} className="overflow-x-hidden w-full max-w-full">
-      {/* ── NAV ── */}
-      <nav className="nav" id="nav">
-        <Link href="/" className="nav-logo">dictate</Link>
-        <div className="nav-links">
-          <a href="#how" className="nav-link hm">How it works</a>
-          <a href="#features" className="nav-link hm">Features</a>
-          <a href="https://github.com/Aditya190803/dictate" target="_blank" rel="noopener noreferrer" className="nav-github">
-            <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
-            </svg>
-            <span>GitHub</span>
-          </a>
-        </div>
-      </nav>
+    <p className="font-mono text-xs font-medium tracking-[0.14em] text-go uppercase">
+      {children}
+    </p>
+  );
+}
 
-      {/* ── HERO ── */}
-      <header className="hero">
-        {/* Decorative floating orbs */}
-        <div className="hero-orb" aria-hidden="true" />
-        <div className="hero-orb-sm" aria-hidden="true" />
+function SectionHead({
+  eyebrow,
+  title,
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <FadeIn className="max-w-2xl">
+      <Eyebrow>{eyebrow}</Eyebrow>
+      <h2 className="mt-3 font-serif text-3xl leading-[1.1] tracking-[-0.02em] text-balance sm:text-4xl">
+        {title}
+      </h2>
+      {children && (
+        <p className="mt-3 text-[0.98rem] leading-relaxed text-pretty text-muted-foreground">
+          {children}
+        </p>
+      )}
+    </FadeIn>
+  );
+}
 
-        <div className="wrap hero-wrap">
-          <div className="hero-text">
-            <h1 ref={heroH1Ref}>
-              Voice to text,<br />
-              from your <span>terminal.</span>
-            </h1>
+export default function Home() {
+  return (
+    <>
+      <a href="#main" className="skip">
+        Skip to content
+      </a>
 
-            <p ref={heroDescRef} className="hero-desc">
-              A signal-driven CLI for Wayland Linux. Mistral realtime STT by default.
-              One keybind. Speak. Get text. No GUI, no daemon.
-            </p>
-
-            {/* Waveform animation */}
-            <div ref={heroWaveformRef} className="hero-waveform">
-              <div className="waveform-bars">
-                {Array.from({ length: 8 }).map((_, i) => (
-                  <div key={i} className="waveform-bar" />
-                ))}
-              </div>
-              <span className="waveform-label">voice → text</span>
-            </div>
+      <header className="sticky top-0 z-50 border-b bg-background/85 backdrop-blur-md">
+        <nav className="mx-auto flex h-13 w-full max-w-4xl items-center gap-6 px-6">
+          <Link href="/" className="font-mono text-[0.95rem] font-bold tracking-[-0.02em]">
+            <span className="text-go" aria-hidden="true">
+              ›
+            </span>{" "}
+            dictate
+          </Link>
+          <div className="ml-auto hidden items-center gap-1 sm:flex">
+            <Button variant="ghost" size="sm" asChild>
+              <a href="#how">How it works</a>
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <a href="#providers">Providers</a>
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <a href="#install">Install</a>
+            </Button>
           </div>
-
-          <div ref={heroInstallRef} className="hero-install">
-            <div className="install-panel">
-              <div ref={heroAgentRef} className="install-section">
-                <div className="install-section-header">
-                  <span className="install-badge rec">recommended</span>
-                  <span className="install-section-title">AI agent</span>
-                </div>
-                <div className="install-prompt-block">
-                  <CopyButton text={AGENT_PROMPT} label="copy" id="hero-agent-copy" />
-                  <pre>{AGENT_PROMPT}</pre>
-                </div>
-                <div className="install-tags">
-                  {["Claude Code", "Cursor", "Copilot", "Windsurf", "Gemini CLI"].map((a) => (
-                    <span className="install-tag" key={a}>{a}</span>
-                  ))}
-                </div>
-              </div>
-
-              <div className="install-panel-divider" />
-
-              <div ref={heroScriptRef} className="install-section">
-                <div className="install-section-header">
-                  <span className="install-badge alt">manual</span>
-                  <span className="install-section-title">Install script</span>
-                </div>
-                <div className="install-cmd-bar">
-                  <code>{CURL_CMD}</code>
-                  <CopyButton text={CURL_CMD} label="copy" id="hero-curl-copy" />
-                </div>
-                <div className="install-tags">
-                  {["Arch", "Ubuntu", "Fedora", "Debian", "openSUSE", "Alpine", "Void"].map((d) => (
-                    <span className="install-tag" key={d}>{d}</span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+          <Button variant="ghost" size="icon" asChild aria-label="View dictate on GitHub">
+            <a href={REPO} target="_blank" rel="noopener noreferrer">
+              <GithubLogo className="size-[1.1rem]" />
+            </a>
+          </Button>
+        </nav>
       </header>
 
-      {/* ── HOW IT WORKS ── */}
-      <div className="sec-line" />
-      <section className="sec" id="how">
-        <div className="wrap">
-          <div ref={howHeadRef} className="sec-head">
-            <span className="sec-head-label">{"// flow"}</span>
-            <h2>How it works</h2>
-            <p>A single UNIX signal controls the entire flow. No daemon polling, no wasted resources.</p>
-          </div>
+      <main id="main" className="mx-auto w-full max-w-4xl px-6">
+        {/* ── Hero ── */}
+        <section className="pt-16 pb-16 sm:pt-24 sm:pb-20">
+          <FadeIn>
+            <Eyebrow>Speech to text for Wayland Linux and Windows</Eyebrow>
+            <h1 className="mt-5 max-w-2xl font-serif text-5xl leading-[1.05] tracking-[-0.025em] text-balance sm:text-6xl">
+              Press a key. Speak.{" "}
+              <em className="text-go">It&rsquo;s already typed.</em>
+            </h1>
+            <p className="mt-5 max-w-[52ch] text-[1.05rem] leading-relaxed text-pretty text-muted-foreground">
+              A daemon-friendly dictation CLI. Realtime transcription lands
+              straight in the focused window — no GUI, no cloud account, no
+              waiting for a model to load.
+            </p>
+            <div className="mt-7 flex flex-wrap items-center gap-3">
+              <Button asChild>
+                <a href="#install">Install dictate</a>
+              </Button>
+              <Button variant="outline" asChild>
+                <a href={REPO} target="_blank" rel="noopener noreferrer">
+                  Source on GitHub
+                </a>
+              </Button>
+              <span className="ml-1 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Kbd>Super</Kbd>+<Kbd>R</Kbd>
+                <span className="mx-1 opacity-50">/</span>
+                <Kbd>Ctrl</Kbd>+<Kbd>Alt</Kbd>+<Kbd>R</Kbd>
+              </span>
+            </div>
+          </FadeIn>
+        </section>
 
-          <div ref={flowRef} className="flow">
-            {FLOW_STEPS.map((s) => (
-              <div className="flow-card" key={s.num}>
-                <div className="flow-num">{s.num}</div>
-                <div className="flow-title">{s.title}</div>
-                <div className="flow-desc">{s.desc}</div>
-                <div className="flow-snippet">{s.code}</div>
-              </div>
+        <Separator />
+
+        {/* ── How it works ── */}
+        <section id="how" className="scroll-mt-16 py-14 sm:py-16">
+          <SectionHead eyebrow="How it works" title="One key, held open by a warm daemon" />
+
+          <div className="mt-10 grid gap-x-8 gap-y-8 sm:grid-cols-2 lg:grid-cols-4">
+            {STEPS.map((s, i) => (
+              <FadeIn key={s.n} delay={i * 60}>
+                <div className="border-t pt-4">
+                  <span className="font-mono text-xs font-medium text-go">{s.n}</span>
+                  <h3 className="mt-2 text-[0.95rem] font-medium">{s.t}</h3>
+                  <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                    {s.d}
+                  </p>
+                </div>
+              </FadeIn>
             ))}
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* ── FEATURES ── */}
-      <div className="sec-line" />
-      <section className="sec" id="features">
-        <div className="wrap">
-          <div ref={featHeadRef} className="sec-head">
-            <span className="sec-head-label">{"// features"}</span>
-            <h2>Built for the terminal</h2>
-            <p>A UNIX citizen. Composable. Zero runtime overhead when idle.</p>
-          </div>
+        <Separator />
 
-          <div ref={bentoRef} className="bento">
-            {FEATURES.map((f) => {
-              const Icon = f.icon;
-              return (
-                <div className="bento-card" key={f.title}>
-                  <div className="bento-icon">
-                    <Icon weight="duotone" size={28} color="var(--accent)" />
-                  </div>
-                  <div className="bento-t">{f.title}</div>
-                  <div className="bento-d">{f.desc}</div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </section>
+        {/* ── Providers ── */}
+        <section id="providers" className="scroll-mt-16 py-14 sm:py-16">
+          <SectionHead eyebrow="Providers" title="Pick your trade-off, not ours" />
 
-      {/* ── FOOTER ── */}
-      <footer className="foot">
-        <div className="foot-inner">
-          <div className="foot-brand">
-            <div className="foot-logo">
-              dictate
+          <FadeIn delay={80} className="mt-8">
+            <div className="overflow-hidden rounded-xl border bg-card">
+              <Table>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead>Provider</TableHead>
+                    <TableHead>Model</TableHead>
+                    <TableHead>Realtime</TableHead>
+                    <TableHead>Audio</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {PROVIDERS.map((p) => (
+                    <TableRow key={p.name}>
+                      <TableCell className="font-medium">{p.name}</TableCell>
+                      <TableCell className="font-mono text-[0.78rem] text-muted-foreground">
+                        {p.model}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={p.realtime ? "go" : "secondary"}>
+                          {p.realtime ? "streaming" : "on pause"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={p.local ? "go" : "secondary"}>
+                          {p.local ? "on device" : "cloud"}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             </div>
-            <div className="foot-tech">
-              Rust<span>·</span>PipeWire<span>·</span>Wayland<span>·</span>GPL-3.0
-            </div>
+            <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
+              Four profiles: live typing streams words as you speak, smart paste
+              delivers one polished block, segmented splits on pauses (the
+              default), and batch clip keeps the LLM out of the loop.
+            </p>
+          </FadeIn>
+        </section>
+
+        <Separator />
+
+        {/* ── Features ── */}
+        <section id="features" className="scroll-mt-16 py-14 sm:py-16">
+          <SectionHead eyebrow="Details" title="A UNIX citizen that happens to hear" />
+
+          <div className="mt-10 grid gap-x-10 gap-y-7 sm:grid-cols-2 lg:grid-cols-3">
+            {FEATURES.map((f, i) => (
+              <FadeIn key={f.t} delay={i * 40}>
+                <h3 className="text-sm font-medium">{f.t}</h3>
+                <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                  {f.d}
+                </p>
+              </FadeIn>
+            ))}
           </div>
-          <div className="foot-links">
-            <a href="https://github.com/Aditya190803/dictate" target="_blank" rel="noopener noreferrer">GitHub</a>
-            <a href="https://github.com/Aditya190803/dictate/releases" target="_blank" rel="noopener noreferrer">Releases</a>
+        </section>
+
+        <Separator />
+
+        {/* ── Install ── */}
+        <section id="install" className="scroll-mt-16 py-14 sm:py-16">
+          <SectionHead eyebrow="Install" title="Running in about a minute">
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em]">dictate doctor</code>{" "}
+            checks the whole chain — keys, mic, permissions, daemons.
+          </SectionHead>
+
+          <FadeIn delay={70} className="mt-8">
+            <InstallTabs />
+          </FadeIn>
+
+          <FadeIn delay={120} className="mt-8">
+            <div className="flex items-start gap-3 rounded-lg border bg-card p-4">
+              <p className="flex-1 font-mono text-[0.78rem] leading-relaxed text-muted-foreground">
+                {AGENT_PROMPT}
+              </p>
+              <CopyButton text={AGENT_PROMPT} />
+            </div>
+            <p className="mt-3 text-sm text-muted-foreground">
+              Or hand that prompt to Claude Code, Cursor, Copilot, Windsurf, or
+              Gemini CLI.
+            </p>
+          </FadeIn>
+        </section>
+      </main>
+
+      <footer className="border-t">
+        <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center justify-between gap-3 px-6 py-8">
+          <p className="font-mono text-xs text-muted-foreground">
+            Free, GPL-3.0 · Rust · PipeWire · WASAPI
+          </p>
+          <div className="flex flex-wrap gap-5 text-sm text-muted-foreground">
+            <a className="transition-colors hover:text-foreground" href={REPO} target="_blank" rel="noopener noreferrer">
+              GitHub
+            </a>
+            <a className="transition-colors hover:text-foreground" href={`${REPO}/releases`} target="_blank" rel="noopener noreferrer">
+              Releases
+            </a>
+            <a className="transition-colors hover:text-foreground" href="/INSTALL.md">
+              Docs
+            </a>
+            <a className="transition-colors hover:text-foreground" href={`${REPO}/blob/main/LICENSE`} target="_blank" rel="noopener noreferrer">
+              License
+            </a>
           </div>
         </div>
       </footer>
-    </main>
+    </>
   );
 }

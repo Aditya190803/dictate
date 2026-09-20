@@ -2,10 +2,17 @@
 /target
 
 # Environment files
-.env
+/.env
+.env.*
+!.env.example
+
+# Patch rejects
+*.orig
+*.rej
 
 # Editor/IDE
 *.swp
+.commandcode/
 *.swo
 *~
 .vscode/
@@ -33,3 +40,7 @@ site/.vercel
 
 # Logs
 *.log
+
+# Coverage
+tarpaulin-report*
+lcov*

@@ -32,21 +32,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Toolchain is pinned in rust-toolchain.toml (stable + rustfmt/clippy),
+      # so this step takes no toolchain input and just adds the matrix target.
+      # (Uses @master because that ref follows the toolchain file; the pin
+      # itself lives in rust-toolchain.toml, not in the action ref.)
+      - uses: dtolnay/rust-toolchain@master
         with:
-          components: rustfmt, clippy
           targets: ${{ matrix.target }}
 
+      # Swatinem/rust-cache instead of hand-rolled actions/cache on
+      # ~/.cargo + target/: it caches the right subset (registry, build
+      # fingerprints) and handles key rotation/cleanup automatically.
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-
+          key: ${{ matrix.target }}
 
       # Windows needs no system packages: audio goes through WASAPI and TLS
       # through SChannel, both provided by windows-sys / native-tls.
@@ -86,3 +86,27 @@ jobs:
       - name: Build (local)
         if: runner.os == 'Linux'
         run: cargo build --verbose --features local --target ${{ matrix.target }}
+
+      # Full feature-matrix coverage via `cargo check` (cheap): a full
+      # `cargo test --features words-ui,local` build links GTK4 + whisper and
+      # is too heavy for every push, so check-only here (`make check-features`
+      # runs the same locally). Default features are covered by Build/Test above.
+      - name: Check (words-ui + local)
+        if: runner.os == 'Linux'
+        run: cargo check --all-targets --features words-ui,local --target ${{ matrix.target }}
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+      # No deny.toml / audit config stub: rustsec/audit-check needs no local
+      # config (it checks Cargo.lock against the RustSec advisory DB fetched
+      # at runtime). A license lint (cargo-deny) is intentionally deferred
+      # until someone derives the allow-list from a real resolve; see
+      # `cargo metadata --format-version 1` output for the license set.
+      - name: Audit dependencies
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

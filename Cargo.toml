@@ -2,6 +2,9 @@
 name = "dictate"
 version = "1.1.0-dev"
 edition = "2021"
+# MSRV floor: 1.82 — code uses `is_none_or` (stabilized 1.82, see
+# src/word_store.rs). CI builds pinned stable (see rust-toolchain.toml).
+rust-version = "1.82"
 description = "Speech-to-text tool for Wayland and Windows with stdout output"
 license = "GPL-3.0-or-later"
 authors = ["Aditya Mer <adityamer.work@gmail.com>"]
@@ -73,8 +76,9 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 tempfile = "3.0"
+# mockito is used by unit tests in src/transcription/online.rs (async mock
+# HTTP servers). tokio-test was removed: nothing in src/ or tests/ imports it.
 mockito = "1.0"
-tokio-test = "0.4"
 
 
 [[bin]]
@@ -85,5 +89,9 @@ path = "src/main.rs"
 opt-level = 3
 lto = true
 codegen-units = 1
+# panic=abort keeps the shipped binary small, but test targets need unwinding:
+# run tests with `cargo test` (dev/test profiles use unwind, see
+# .cargo/config.toml), never `cargo test --release`, which fails with
+# "building tests with panic=abort is not supported".
 panic = "abort"
 strip = true

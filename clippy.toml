@@ -1,0 +1,3 @@
+# Minimal clippy config: defaults are fine; this file pins lint behavior and
+# documents that `cargo clippy --all-targets -D warnings` must stay green.
+msrv = "1.82"

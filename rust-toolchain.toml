@@ -1,0 +1,6 @@
+# Pinned toolchain for CI and local rustup users. rustup automatically uses
+# this file; CI's dtolnay/rust-toolchain step takes no toolchain input so it
+# follows the pin here instead of floating on the action's stable branch.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

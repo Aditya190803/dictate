@@ -281,7 +281,10 @@ fn build_window(app: &Application, path: PathBuf, initial_book: WordBook) {
         do_refresh();
     }
 
-    let refresh_fn = refresh_slot.borrow().clone().unwrap();
+    let refresh_fn = refresh_slot
+        .borrow()
+        .clone()
+        .expect("refresh closure must be installed before wiring search");
 
     search.connect_changed({
         let search_query = Rc::clone(&search_query);

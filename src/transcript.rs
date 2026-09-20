@@ -3,7 +3,6 @@ use std::time::Instant;
 
 pub type SegmentId = u64;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SegmentKind {
     Inserted,
@@ -12,7 +11,6 @@ pub enum SegmentKind {
     RejectedCommand,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TranscriptSegment {
     pub id: SegmentId,
@@ -68,7 +66,8 @@ impl TranscriptBuffer {
         range
     }
 
-    #[allow(dead_code)]
+    /// Kept for session-command bookkeeping; currently only exercised via
+    /// `record_rejected_command`, but part of the public transcript API.
     pub fn record_command(&mut self, text: &str) {
         self.push_segment(text, SegmentKind::Command, self.text.len()..self.text.len());
     }
@@ -135,8 +134,8 @@ impl TranscriptBuffer {
             return None;
         }
 
-        let start = ranges.last().unwrap().start;
-        Some(start..end)
+        let last = ranges.last()?;
+        Some(last.start..end)
     }
 
     pub fn last_line_range(&self) -> Option<Range<usize>> {

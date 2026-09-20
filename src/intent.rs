@@ -195,4 +195,21 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn self_correction_take_is_insert_not_a_command() {
+        let take = "Tomorrow is Tuesday, right? No, wait, it's Wednesday.";
+        assert!(matches!(
+            detect_intent(take),
+            DictationIntent::InsertText(text) if text == take
+        ));
+    }
+
+    #[test]
+    fn correction_tail_alone_is_a_command() {
+        assert!(matches!(
+            detect_intent("No, wait, it's Wednesday."),
+            DictationIntent::ReplaceRecentImplicit { .. }
+        ));
+    }
 }

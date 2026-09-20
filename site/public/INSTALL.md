@@ -317,7 +317,7 @@ dictate config edit
 
 ### Polish & `text.toml`
 
-Default **`segmented`** dictation polishes **each pause-bound segment** with **OpenCode Zen** (`big-pickle`) when `OPENCODE_API_KEY` is set. Without a key, segments still get local dictionary/snippets/cleanup and context edits.
+Default dictation records until you stop, then polishes **the whole take** with **OpenCode Zen** (`big-pickle`) when `OPENCODE_API_KEY` is set. Without a key, the take still gets local dictionary/snippets/cleanup.
 
 Create `~/.config/dictate/text.toml` (optional):
 

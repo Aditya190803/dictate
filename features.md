@@ -21,7 +21,7 @@ Open-source, local-first, CLI-native. Ignore billing, teams, enterprise complian
 
 ```text
 audio → transcription → dictionary → inline fixes → snippets → cleanup
-  → developer mode → [LLM polish per segment] → type / paste / clipboard / stdout
+  → developer mode → [LLM polish on stop] → type / paste / clipboard / stdout
 ```
 
 **Initial MVP** (snippets, dictionary, order, tests): done in `src/text_processing.rs`.

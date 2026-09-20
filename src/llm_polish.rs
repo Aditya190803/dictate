@@ -560,4 +560,17 @@ mod tests {
     fn opencode_max_tokens_preserves_large_budgets() {
         assert_eq!(opencode_max_tokens(8192), 8192);
     }
+
+    #[test]
+    fn polish_prompt_covers_self_corrections_and_the_whole_take() {
+        let polish = PolishConfig::default();
+        let system = [
+            polish_system_prompt(&polish),
+            SEGMENT_SYSTEM_SUFFIX.to_string(),
+        ]
+        .concat();
+        assert!(system.contains("Wednesday"));
+        assert!(system.contains("ONE take"));
+        assert!(system.contains("new paragraph"));
+    }
 }

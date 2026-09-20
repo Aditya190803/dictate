@@ -363,6 +363,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn full_take_self_correction_types_once_without_live_edits() {
+        let backend = MockTypingBackend::default();
+        let mut buffer = TranscriptBuffer::new();
+        let config = Config {
+            polish_provider: "mistral".to_string(),
+            ..Config::default()
+        };
+        let take = "Tomorrow is Tuesday, right? No, wait, it's Wednesday.";
+        handle_final_segment(&backend, &mut buffer, &config, take, "plain")
+            .await
+            .unwrap();
+        assert!(buffer.text().contains("Tuesday"));
+        assert!(buffer.text().contains("Wednesday"));
+        assert_eq!(
+            backend
+                .operations()
+                .iter()
+                .filter(|op| matches!(op, TypingOperation::Type(_)))
+                .count(),
+            1
+        );
+        assert!(backend
+            .operations()
+            .iter()
+            .all(|op| matches!(op, TypingOperation::Type(_))));
+    }
+
+    #[tokio::test]
     async fn replace_typed_suffix_rewrites_preview() {
         let backend = MockTypingBackend::default();
         let mut buffer = TranscriptBuffer::new();

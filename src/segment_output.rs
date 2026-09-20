@@ -190,4 +190,29 @@ mod tests {
             .unwrap();
         assert!(buffer.lock().await.text().contains("hello"));
     }
+
+    #[tokio::test]
+    async fn full_take_self_correction_is_inserted_not_eaten_as_a_command() {
+        let config = Config {
+            profile: DictateProfile::Segmented,
+            mistral_api_key: None,
+            polish_provider: "mistral".to_string(),
+            ..Default::default()
+        };
+        let beep = BeepPlayer::new(crate::beep::BeepConfig {
+            enabled: false,
+            volume: 0.0,
+        })
+        .unwrap();
+        let buffer = tokio::sync::Mutex::new(TranscriptBuffer::new());
+        let take = "Tomorrow is Tuesday, right? No, wait, it's Wednesday.";
+        emit_finalized_segment(&config, None, &buffer, take, "plain", &beep)
+            .await
+            .unwrap();
+        let typed = buffer.lock().await.text().to_string();
+        assert!(
+            typed.contains("Tuesday") && typed.contains("Wednesday"),
+            "expected the whole take, got {typed:?}"
+        );
+    }
 }

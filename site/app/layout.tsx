@@ -1,9 +1,9 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Geist, JetBrains_Mono, Newsreader } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({
-  variable: "--font-inter",
+const geist = Geist({
+  variable: "--font-geist",
   subsets: ["latin"],
   display: "swap",
 });
@@ -11,6 +11,13 @@ const inter = Inter({
 const jetbrainsMono = JetBrains_Mono({
   variable: "--font-jetbrains",
   subsets: ["latin"],
+  display: "swap",
+});
+
+const newsreader = Newsreader({
+  variable: "--font-newsreader",
+  subsets: ["latin"],
+  style: ["normal", "italic"],
   display: "swap",
 });
 
@@ -41,18 +48,13 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f5f3ef" },
-    { media: "(prefers-color-scheme: dark)", color: "#101211" },
-  ],
+  themeColor: "#fcfcfa",
 };
 
-/**
- * Applies a stored theme before first paint. Without this the page renders in
- * the system theme and then snaps to the stored one — a visible flash on every
- * load for anyone who picked the non-default.
- */
-const THEME_INIT = `(function(){try{var t=localStorage.getItem('theme');if(t==='dark'||t==='light'){document.documentElement.dataset.theme=t}}catch(e){}})()`;
+/* Marks the document as scripted so the scroll-reveal starting states
+   (gated on `html.js` in CSS) apply before first paint. If scripts never
+   run, every section simply renders at full opacity. */
+const BOOT = `(function(){document.documentElement.classList.add('js')})()`;
 
 export default function RootLayout({
   children,
@@ -60,11 +62,11 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${inter.variable} ${jetbrainsMono.variable}`}
+      className={`${geist.variable} ${jetbrainsMono.variable} ${newsreader.variable}`}
       suppressHydrationWarning
     >
       <head>
-        <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
+        <script dangerouslySetInnerHTML={{ __html: BOOT }} />
       </head>
       <body suppressHydrationWarning>{children}</body>
     </html>

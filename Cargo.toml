@@ -1,6 +1,6 @@
 [package]
 name = "dictate"
-version = "1.1.0-dev"
+version = "1.2.0"
 edition = "2021"
 # MSRV floor: 1.82 — code uses `is_none_or` (stabilized 1.82, see
 # src/word_store.rs). CI builds pinned stable (see rust-toolchain.toml).

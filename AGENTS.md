@@ -9,7 +9,7 @@ cargo build --release --features words-ui
 cp target/release/dictate ~/.local/bin/
 ```
 
-Verify: `dictate --version` (expect **1.1.0-dev** while on dev builds).
+Verify: `dictate --version` (expect **1.2.0** at the v1.2.0 tag; dev builds after it are `1.2.0-dev`).
 
 ## Non-interactive config
 

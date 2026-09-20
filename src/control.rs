@@ -8,12 +8,8 @@
 
 use tokio::sync::mpsc;
 
-/// How the user toggles a running daemon, phrased for this platform.
-#[cfg(unix)]
-pub const TOGGLE_HINT: &str = "Send SIGUSR1";
-/// How the user toggles a running daemon, phrased for this platform.
-#[cfg(windows)]
-pub const TOGGLE_HINT: &str = "Press the shortcut or run `dictate toggle live|smart`";
+/// How the user toggles a running daemon.
+pub const TOGGLE_HINT: &str = "run dictate again";
 
 /// What a control message asks the daemon to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,8 +22,8 @@ pub enum ControlEvent {
 
 /// Which long-running dictate process a message is addressed to.
 ///
-/// Slots keep the live and smart daemons independently addressable so a
-/// shortcut only ever toggles its own.
+/// Live/Smart slots remain so old `--mode live|smart` daemons can still be
+/// toggled; new installs use [`Slot::Main`] only.
 // The daemon loops that construct most of these live behind `cfg(not(test))`.
 #[cfg_attr(test, allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +34,7 @@ pub enum Slot {
     Live,
     /// `dictate --daemon --mode smart`
     Smart,
-    /// The Windows hotkey agent (`dictate hotkeys`). Constructed only on Windows —
+    /// The Windows hotkey agent (installed by `dictate setup`). Constructed only on Windows —
     /// Linux uses systemd user services instead of a resident agent.
     #[cfg_attr(not(windows), allow(dead_code))]
     Hotkeys,

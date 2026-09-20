@@ -1,5 +1,5 @@
 //! System-wide hotkeys (`RegisterHotKey`), the Windows equivalent of a
-//! compositor keybinding that runs `dictate toggle live|smart`.
+//! compositor keybinding that runs `dictate`.
 
 use anyhow::{anyhow, bail, Result};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{

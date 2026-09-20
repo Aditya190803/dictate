@@ -22,7 +22,7 @@ const AGENT_PROMPT =
   "Read https://dictate.adityamer.dev/INSTALL.md and follow it step by step to install and configure dictate on this machine. Ask me the setup questions first, then execute everything non-interactively using 'dictate config set'.";
 
 const STEPS = [
-  { n: "01", t: "Bind a key", d: "One shortcut per mode, registered system-wide." },
+  { n: "01", t: "Bind a key", d: "One shortcut, registered system-wide." },
   { n: "02", t: "Speak", d: "A warm daemon holds the model and socket. No cold start." },
   { n: "03", t: "Press again", d: "The same key stops the take and finalises it." },
   { n: "04", t: "Text lands", d: "Typed, pasted, copied, or written to stdout." },
@@ -203,9 +203,9 @@ export default function Home() {
               </Table>
             </div>
             <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
-              Four profiles: live typing streams words as you speak, smart paste
-              delivers one polished block, segmented splits on pauses (the
-              default), and batch clip keeps the LLM out of the loop.
+              One dictation: words appear as you speak, pauses polish the last
+              phrase, and voice edits rewrite what was just typed. Clipboard
+              commands run on the same shortcut when you copied text first.
             </p>
           </FadeIn>
         </section>

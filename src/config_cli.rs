@@ -3,28 +3,25 @@
 use crate::config::Config;
 use crate::control::{self, Slot};
 use crate::platform;
-use crate::profile::DictateProfile;
 use anyhow::{anyhow, Result};
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-#[cfg(unix)]
-use crate::config::YDOTOOL_PASTE_SHELL;
-
 // ─── Data structures ─────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
 pub enum ConfigCommand {
-    /// Interactively create or update the config file.
-    Wizard(Box<WizardOptions>),
     /// Print the current config file, or one config key.
     Get { key: Option<String> },
     /// Set one config key in the config file.
     Set { key: String, value: String },
     /// Open the config file in $EDITOR.
     Edit,
+    /// Interactively create or update the config file.
+    #[command(hide = true)]
+    Wizard(Box<WizardOptions>),
 }
 
 /// Login integration: warm systemd user services on Linux, the global-shortcut
@@ -81,7 +78,7 @@ pub struct ShortcutArgs {
     pub profile: String,
     #[arg(long, default_value = "SUPER,R")]
     pub key: String,
-    /// GNOME/Windows: register the live + smart keybindings from the config file
+    /// GNOME/Windows: register the dictation shortcut from the config file
     #[arg(long)]
     pub install: bool,
 }
@@ -106,36 +103,11 @@ pub enum ShortcutMode {
     Paste,
 }
 
-/// Daemon slot toggled by desktop shortcuts (`dictate toggle live|smart`).
+/// Legacy live/smart toggle aliases (`dictate toggle live|smart`).
 #[derive(Clone, Copy, PartialEq, ValueEnum)]
 pub enum ToggleKind {
     Live,
     Smart,
-}
-
-impl ToggleKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ToggleKind::Live => "live",
-            ToggleKind::Smart => "smart",
-        }
-    }
-
-    /// Control slot the matching daemon listens on.
-    pub fn slot(self) -> Slot {
-        match self {
-            ToggleKind::Live => Slot::Live,
-            ToggleKind::Smart => Slot::Smart,
-        }
-    }
-
-    /// `SHORTCUT_OUTPUT` mode this kind of daemon writes through.
-    fn output_mode(self) -> &'static str {
-        match self {
-            ToggleKind::Live => "type",
-            ToggleKind::Smart => "paste",
-        }
-    }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -181,11 +153,11 @@ pub fn get_default_config_path() -> PathBuf {
 ///
 /// Windows reserves Win+R for the Run dialog, so `RegisterHotKey` refuses the
 /// Wayland default and the shortcut would silently never fire.
-pub fn default_shortcut_keys() -> (&'static str, &'static str) {
+pub fn default_shortcut_key() -> &'static str {
     #[cfg(windows)]
-    return ("CTRL,ALT,R", "CTRL,ALT,SHIFT,R");
+    return "CTRL,ALT,R";
     #[cfg(unix)]
-    return ("SUPER,R", "SUPER,SHIFT,R");
+    return "SUPER,R";
 }
 
 /// Create a directory (and parents) for a private config/text file.
@@ -242,7 +214,7 @@ pub fn ensure_config_file(path: &Path) -> Result<()> {
         ensure_private_dir(parent)?;
     }
     if !path.exists() {
-        let (live, smart) = default_shortcut_keys();
+        let key = default_shortcut_key();
         write_private_file(
             path,
             format!(
@@ -253,7 +225,7 @@ pub fn ensure_config_file(path: &Path) -> Result<()> {
                  GROQ_MODEL=whisper-large-v3-turbo\nTRANSCRIPTION_LANGUAGE=auto\n\
                  TRANSCRIPTION_TIMEOUT_SECONDS=60\nTRANSCRIPTION_MAX_RETRIES=3\n\
                  ENABLE_AUDIO_FEEDBACK=true\nBEEP_VOLUME=0.1\n\
-                 SHORTCUT_OUTPUT=type\nSHORTCUT_KEY_LIVE={live}\nSHORTCUT_KEY_SMART={smart}\n"
+                 SHORTCUT_OUTPUT=type\nSHORTCUT_KEY={key}\nSHORTCUT_KEY_LIVE={key}\n"
             )
             .as_bytes(),
         )?;
@@ -300,7 +272,6 @@ fn normalize_config_key(key: &str) -> String {
         "beep_volume" => "BEEP_VOLUME",
         "shortcut" | "shortcut_key" => "SHORTCUT_KEY",
         "shortcut_key_live" | "shortcut_live" | "shortcut-live" => "SHORTCUT_KEY_LIVE",
-        "shortcut_key_smart" | "shortcut_smart" | "shortcut-smart" => "SHORTCUT_KEY_SMART",
         "desktop" | "shortcut_desktop" => "SHORTCUT_DESKTOP",
         "mode" | "output_mode" => "SHORTCUT_OUTPUT",
         other => return other.to_uppercase(),
@@ -370,29 +341,13 @@ fn run_config_wizard(path: &PathBuf, options: &WizardOptions) -> Result<()> {
     .to_lowercase();
     set_config_value(path, "provider", &provider)?;
 
-    let profile = option_or_prompt(
-        &options.profile,
-        "Dictation style (Enter = segmented default; legacy: live_typing | smart_paste | batch_clip)",
-        Some("segmented"),
-    )?
-    .to_lowercase()
-    .replace(' ', "_");
-    set_config_value(path, "profile", &profile)?;
-
-    match profile.as_str() {
-        "smart_paste" | "batch_clip" => {
-            set_config_value(path, "batch-mode", "true")?;
-            set_config_value(path, "transcription-mode", "auto")?;
-        }
-        "live_typing" | "segmented" => {
-            set_config_value(path, "batch-mode", "false")?;
-            set_config_value(path, "transcription-mode", "auto")?;
-        }
-        _ => {
-            set_config_value(path, "batch-mode", "false")?;
-            set_config_value(path, "transcription-mode", "auto")?;
-        }
+    if let Some(profile) = &options.profile {
+        set_config_value(path, "profile", profile)?;
+    } else {
+        set_config_value(path, "profile", "segmented")?;
     }
+    set_config_value(path, "batch-mode", "false")?;
+    set_config_value(path, "transcription-mode", "auto")?;
 
     match provider.as_str() {
         "mistral" => {
@@ -449,15 +404,10 @@ fn run_config_wizard(path: &PathBuf, options: &WizardOptions) -> Result<()> {
     )?;
     set_config_value(path, "language", &language)?;
 
-    let default_output = if profile == "smart_paste" {
-        "paste"
-    } else {
-        "type"
-    };
     let output_mode = option_or_prompt(
         &options.output_mode,
         "Shortcut output: type | clipboard | paste | stdout",
-        Some(default_output),
+        Some("type"),
     )?;
     set_config_value(path, "shortcut-output", &output_mode)?;
 
@@ -500,13 +450,7 @@ fn run_config_wizard(path: &PathBuf, options: &WizardOptions) -> Result<()> {
     }
 
     println!("\nSaved config to {}", path.display());
-    println!(
-        "Run `dictate shortcuts {desktop} --profile {profile} --mode {output_mode} --key {shortcut}` \
-         to print a shortcut snippet."
-    );
-    if profile == "smart_paste" || profile == "live_typing" {
-        println!("Daemon profiles: run `dictate --daemon` in the background (or use the shortcut below).");
-    }
+    println!("Start dictation with `dictate` (or bind that command to your shortcut).");
     Ok(())
 }
 
@@ -570,7 +514,7 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
         }
     } else {
         println!("✗ Config file missing: {}", env_path.display());
-        println!("  Run: dictate config wizard");
+        println!("  Run: dictate setup");
     }
 
     println!(
@@ -580,10 +524,7 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
         config.profile.description()
     );
     if config.profile.wants_daemon() {
-        println!(
-            "  Run: dictate --daemon ({} to toggle recording)",
-            control::TOGGLE_HINT
-        );
+        println!("  Run: dictate to start or stop");
     }
     if config.profile.uses_segment_polish() || config.profile.uses_llm_polish() {
         match config.resolve_polish_backend() {
@@ -627,14 +568,12 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
     println!(
         "✓ Clipboard commands: auto when you copied text (≥12 chars) and speak an instruction (same shortcut)"
     );
-    let (default_live, default_smart) = default_shortcut_keys();
-    let live_key = config.shortcut_key_live.as_deref().unwrap_or(default_live);
-    let smart_key = config
-        .shortcut_key_smart
+    let key = config
+        .shortcut_key_live
         .as_deref()
-        .unwrap_or(default_smart);
-    println!("✓ Live shortcut: {live_key} → realtime typing (minimal local cleanup)");
-    println!("✓ Smart shortcut: {smart_key} → record, polish, paste once");
+        .or(config.shortcut_key.as_deref())
+        .unwrap_or(default_shortcut_key());
+    println!("✓ Shortcut: {key} → dictate");
     println!(
         "✓ Words UI: run `dictate words` to edit {}",
         Config::text_config_path_for_env_file(env_path).display()
@@ -662,9 +601,9 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
     // one failed.
     println!(
         "  Daemon logs: {}",
-        daemon_log_path(ToggleKind::Live)
+        daemon_log_path()
             .parent()
-            .map(|p| p.join("{live,smart}-daemon.log").display().to_string())
+            .map(|p| p.join("dictate-daemon.log").display().to_string())
             .unwrap_or_default()
     );
 
@@ -762,14 +701,14 @@ fn check_platform_dependencies(_config: &Config) {
 fn check_platform_dependencies(config: &Config) {
     println!("✓ Typing and clipboard are built in (no ydotool or wl-clipboard needed)");
 
-    for (label, key) in [
-        ("SHORTCUT_KEY_LIVE", config.shortcut_key_live.as_deref()),
-        ("SHORTCUT_KEY_SMART", config.shortcut_key_smart.as_deref()),
-    ] {
-        let Some(key) = key else { continue };
+    if let Some(key) = config
+        .shortcut_key_live
+        .as_deref()
+        .or(config.shortcut_key.as_deref())
+    {
         match platform::hotkeys::parse(key) {
-            Ok(_) => println!("✓ {label} '{key}' is a usable Windows shortcut"),
-            Err(e) => println!("✗ {label} '{key}': {e}"),
+            Ok(_) => println!("✓ SHORTCUT_KEY '{key}' is a usable Windows shortcut"),
+            Err(e) => println!("✗ SHORTCUT_KEY '{key}': {e}"),
         }
     }
 
@@ -783,7 +722,7 @@ fn check_platform_dependencies(config: &Config) {
         Err(e) => println!("✗ Clipboard unavailable: {e}"),
     }
 
-    for slot in [Slot::Live, Slot::Smart] {
+    for slot in [Slot::Main, Slot::Live, Slot::Smart] {
         if control::is_running(slot) {
             println!("✓ {} daemon running", slot.as_str());
         }
@@ -793,73 +732,6 @@ fn check_platform_dependencies(config: &Config) {
 }
 
 // ─── Shortcut printing ───────────────────────────────────────────────────────
-
-fn shortcut_command(mode: &ShortcutMode, profile: &str) -> String {
-    let daemon = matches!(
-        DictateProfile::parse(profile),
-        Some(DictateProfile::Segmented)
-            | Some(DictateProfile::LiveTyping)
-            | Some(DictateProfile::SmartPaste)
-            | Some(DictateProfile::Command)
-    ) || profile == "segmented"
-        || profile == "live_typing"
-        || profile == "smart_paste"
-        || profile == "command";
-    let daemon_flag = if daemon { " --daemon" } else { "" };
-    let mode_flag = if profile == "smart_paste" || profile == "smart" {
-        " --mode smart"
-    } else if profile == "live_typing" || profile == "live" {
-        " --mode live"
-    } else {
-        ""
-    };
-    let base = format!("dictate{daemon_flag}{mode_flag}");
-    match pipe_to_snippet(mode) {
-        Some(pipe) => format!("{base} {pipe}"),
-        None => base,
-    }
-}
-
-/// The `--pipe-to …` fragment of a shortcut snippet, ready to paste into a
-/// config file — shell-quoted where the target needs it.
-#[cfg(unix)]
-fn pipe_to_snippet(mode: &ShortcutMode) -> Option<String> {
-    match mode {
-        ShortcutMode::Auto | ShortcutMode::Stdout => None,
-        ShortcutMode::Clipboard => Some("--pipe-to wl-copy".to_string()),
-        ShortcutMode::Type => Some("--pipe-to ydotool type --file -".to_string()),
-        ShortcutMode::Paste => Some(format!("--pipe-to sh -c '{YDOTOOL_PASTE_SHELL}'")),
-    }
-}
-
-#[cfg(windows)]
-fn pipe_to_snippet(mode: &ShortcutMode) -> Option<String> {
-    let output = match mode {
-        ShortcutMode::Auto | ShortcutMode::Stdout => return None,
-        ShortcutMode::Clipboard => "clipboard",
-        ShortcutMode::Type => "type",
-        ShortcutMode::Paste => "paste",
-    };
-    platform::pipe_to_for_mode(output).map(|argv| format!("--pipe-to {}", argv.join(" ")))
-}
-
-fn mode_name(mode: &ShortcutMode) -> &'static str {
-    match mode {
-        ShortcutMode::Auto => "auto output",
-        ShortcutMode::Stdout => "stdout",
-        ShortcutMode::Clipboard => "clipboard",
-        ShortcutMode::Type => "direct typing",
-        ShortcutMode::Paste => "clipboard + paste",
-    }
-}
-
-fn toggle_shell(cmd: &str) -> String {
-    // SIGUSR1 only to the matching long-running daemon (not one-shot foreground dictate).
-    let pattern = cmd
-        .replacen("dictate", "[d]ictate", 1)
-        .replace('\'', "'\"'\"'");
-    format!("pgrep -f '{pattern}' >/dev/null && pkill -f --signal SIGUSR1 '{pattern}' || ({cmd} &)")
-}
 
 /// argv[0] for a spawned daemon.
 ///
@@ -873,27 +745,13 @@ fn daemon_program() -> String {
     "dictate".to_string()
 }
 
-fn toggle_daemon_argv(kind: ToggleKind) -> Vec<String> {
-    let mut argv = vec![
-        daemon_program(),
-        "--daemon".to_string(),
-        "--mode".to_string(),
-        kind.as_str().to_string(),
-    ];
-    if let Some(pipe) = platform::pipe_to_for_mode(kind.output_mode()) {
+fn toggle_daemon_argv() -> Vec<String> {
+    let mut argv = vec![daemon_program(), "--daemon".to_string()];
+    if let Some(pipe) = platform::pipe_to_for_mode("type") {
         argv.push("--pipe-to".to_string());
         argv.extend(pipe);
     }
     argv
-}
-
-/// Stop the other dictate daemon so only one holds the mic / typing session.
-fn stop_other_daemons(keep: ToggleKind) {
-    for kind in [ToggleKind::Live, ToggleKind::Smart] {
-        if kind != keep {
-            let _ = control::send(kind.slot(), "shutdown");
-        }
-    }
 }
 
 /// Where a shortcut-spawned daemon writes its output.
@@ -902,21 +760,16 @@ fn stop_other_daemons(keep: ToggleKind) {
 /// daemon that fails to reach its provider, or cannot register audio, would
 /// simply appear to do nothing. Keeping the last run on disk makes that
 /// diagnosable: `dictate doctor` prints the path.
-pub fn daemon_log_path(kind: ToggleKind) -> PathBuf {
+pub fn daemon_log_path() -> PathBuf {
     get_default_config_path()
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(format!("{}-daemon.log", kind.as_str()))
+        .join("dictate-daemon.log")
 }
 
-fn daemon_log_target(argv: &[String]) -> Option<std::fs::File> {
-    let kind = if argv.iter().any(|a| a == "smart") {
-        ToggleKind::Smart
-    } else {
-        ToggleKind::Live
-    };
-    let path = daemon_log_path(kind);
+fn daemon_log_target() -> Option<std::fs::File> {
+    let path = daemon_log_path();
     if let Some(parent) = path.parent() {
         if std::fs::create_dir_all(parent).is_ok() {
             restrict_perms(parent);
@@ -931,7 +784,7 @@ fn spawn_daemon(argv: &[String]) -> Result<()> {
     command.args(&argv[1..]).stdin(std::process::Stdio::null());
 
     // One handle, cloned — opening the path twice would truncate the first.
-    match daemon_log_target(argv).and_then(|f| f.try_clone().ok().map(|c| (f, c))) {
+    match daemon_log_target().and_then(|f| f.try_clone().ok().map(|c| (f, c))) {
         Some((out, err)) => {
             command.stdout(out).stderr(err);
         }
@@ -954,27 +807,31 @@ fn spawn_daemon(argv: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Start the `live` or `smart` daemon, or toggle recording if it already runs.
-pub fn run_toggle_daemon(kind: ToggleKind) -> Result<()> {
-    let running = control::is_running(kind.slot());
-    stop_other_daemons(kind);
-    std::thread::sleep(std::time::Duration::from_millis(200));
+fn dictation_slots() -> [Slot; 3] {
+    [Slot::Live, Slot::Smart, Slot::Main]
+}
 
-    if running {
-        if !control::send(kind.slot(), "toggle")? {
-            anyhow::bail!(
-                "the {} daemon stopped before it could be toggled",
-                kind.as_str()
-            );
+/// Start the dictation daemon, or toggle recording if it already runs.
+pub fn run_toggle_daemon(_kind: Option<ToggleKind>) -> Result<()> {
+    for slot in dictation_slots() {
+        if control::is_running(slot) {
+            if !control::send(slot, "toggle")? {
+                anyhow::bail!("the daemon stopped before it could be toggled");
+            }
+            return Ok(());
         }
-        return Ok(());
     }
 
-    spawn_daemon(&toggle_daemon_argv(kind))
+    let _ = control::send(Slot::Live, "shutdown");
+    let _ = control::send(Slot::Smart, "shutdown");
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    spawn_daemon(&toggle_daemon_argv())
 }
 
 // ─── Autostart: systemd user services (Linux) ────────────────────────────────
 
+#[cfg(unix)]
+const DAEMON_SERVICE: &str = "dictate.service";
 #[cfg(unix)]
 const LIVE_SERVICE: &str = "dictate-live.service";
 #[cfg(unix)]
@@ -998,28 +855,19 @@ fn current_exe_for_service() -> Result<PathBuf> {
 }
 
 #[cfg(unix)]
-fn warm_daemon_command(kind: ToggleKind) -> Result<String> {
+fn warm_daemon_command() -> Result<String> {
     let exe = current_exe_for_service()?;
-    let exe = exe.display();
-    Ok(match kind {
-        ToggleKind::Live => {
-            format!("{exe} --daemon --mode live --idle-on-start --pipe-to ydotool type --file -")
-        }
-        ToggleKind::Smart => format!(
-            "{exe} --daemon --mode smart --idle-on-start --pipe-to sh -c '{YDOTOOL_PASTE_SHELL}'"
-        ),
-    })
+    Ok(format!(
+        "{} --daemon --idle-on-start --pipe-to ydotool type --file -",
+        exe.display()
+    ))
 }
 
 #[cfg(unix)]
-fn service_contents(kind: ToggleKind) -> Result<String> {
-    let description = match kind {
-        ToggleKind::Live => "Dictate warm live typing daemon",
-        ToggleKind::Smart => "Dictate warm smart paste daemon",
-    };
-    let command = warm_daemon_command(kind)?;
+fn service_contents() -> Result<String> {
+    let command = warm_daemon_command()?;
     Ok(format!(
-        "[Unit]\nDescription={description}\nAfter=graphical-session.target pipewire.service\n\n[Service]\nType=simple\nExecStart={command}\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=Dictate warm dictation daemon\nAfter=graphical-session.target pipewire.service\n\n[Service]\nType=simple\nExecStart={command}\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n",
     ))
 }
 
@@ -1042,61 +890,59 @@ fn service_active(name: &str) -> bool {
 }
 
 #[cfg(unix)]
+fn remove_legacy_mode_services() {
+    let _ = run_systemctl(&["disable", "--now", LIVE_SERVICE, SMART_SERVICE]);
+    for name in [LIVE_SERVICE, SMART_SERVICE] {
+        let path = service_path(name);
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+#[cfg(unix)]
 fn install_autostart_services() -> Result<()> {
     let dir = systemd_user_dir();
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(
-        service_path(LIVE_SERVICE),
-        service_contents(ToggleKind::Live)?,
-    )?;
-    std::fs::write(
-        service_path(SMART_SERVICE),
-        service_contents(ToggleKind::Smart)?,
-    )?;
+    remove_legacy_mode_services();
+    std::fs::write(service_path(DAEMON_SERVICE), service_contents()?)?;
 
     run_systemctl(&["daemon-reload"])?;
-    let enabled = run_systemctl(&["enable", LIVE_SERVICE, SMART_SERVICE])?;
+    let enabled = run_systemctl(&["enable", DAEMON_SERVICE])?;
     if !enabled {
         anyhow::bail!("systemctl --user enable failed");
     }
-    let restarted = run_systemctl(&["restart", LIVE_SERVICE, SMART_SERVICE])?;
+    let restarted = run_systemctl(&["restart", DAEMON_SERVICE])?;
     if !restarted {
         anyhow::bail!("systemctl --user restart failed");
     }
 
-    println!("Warm Dictate daemons installed and started:");
+    println!("Warm Dictate daemon installed and started:");
     println!(
-        "  {LIVE_SERVICE}:  {}",
-        service_path(LIVE_SERVICE).display()
+        "  {DAEMON_SERVICE}: {}",
+        service_path(DAEMON_SERVICE).display()
     );
-    println!(
-        "  {SMART_SERVICE}: {}",
-        service_path(SMART_SERVICE).display()
-    );
-    println!("Shortcuts now signal warm daemons instead of cold-starting them.");
+    println!("Shortcuts now signal a warm daemon instead of cold-starting it.");
     Ok(())
 }
 
 #[cfg(unix)]
 fn remove_autostart_services() -> Result<()> {
-    let disable_args = ["disable", "--now", LIVE_SERVICE, SMART_SERVICE];
-    let _ = run_systemctl(&disable_args[..]);
-    for name in [LIVE_SERVICE, SMART_SERVICE] {
-        let path = service_path(name);
-        if path.exists() {
-            std::fs::remove_file(path)?;
-        }
+    let _ = run_systemctl(&["disable", "--now", DAEMON_SERVICE]);
+    remove_legacy_mode_services();
+    let path = service_path(DAEMON_SERVICE);
+    if path.exists() {
+        std::fs::remove_file(path)?;
     }
-    let reload_args = ["daemon-reload"];
-    let _ = run_systemctl(&reload_args[..]);
-    println!("Warm Dictate daemons removed.");
+    let _ = run_systemctl(&["daemon-reload"]);
+    println!("Warm Dictate daemon removed.");
     Ok(())
 }
 
 /// Report whether dictate starts itself at login.
 ///
-/// Linux keeps a warm daemon per mode as systemd user services; Windows keeps a
-/// single hotkey agent that starts the daemons on demand.
+/// Linux keeps a warm dictation daemon as a systemd user service; Windows keeps a
+/// single hotkey agent that starts the daemon on demand.
 pub fn print_autostart_status() {
     #[cfg(windows)]
     platform::autostart::print_status();
@@ -1133,51 +979,36 @@ pub fn run_autostart_command(command: &AutostartCommand) -> Result<()> {
 #[cfg(windows)]
 pub async fn run_hotkey_agent(warm: bool, env_path: &Path) -> Result<()> {
     let mut control = crate::control::Control::start(Slot::Hotkeys)?;
-    let (live_key, smart_key) = read_config_keys(env_path)?;
-
-    let bindings = [
-        (ToggleKind::Live, live_key.clone()),
-        (ToggleKind::Smart, smart_key.clone()),
-    ];
-    let mut specs = Vec::new();
-    for (kind, key) in &bindings {
-        let spec = platform::hotkeys::parse(key)
-            .map_err(|e| anyhow!("SHORTCUT_KEY_{}: {e}", kind.as_str().to_uppercase()))?;
-        specs.push((*kind as i32, spec, key.clone()));
-    }
+    let key = shortcut_key_to_bind(env_path)?;
+    let spec = platform::hotkeys::parse(&key).map_err(|e| anyhow!("shortcut '{key}': {e}"))?;
+    let specs = vec![(0, spec, key.clone())];
 
     if warm {
-        for kind in [ToggleKind::Live, ToggleKind::Smart] {
-            if !control::is_running(kind.slot()) {
-                let mut argv = toggle_daemon_argv(kind);
-                // Warm means loaded but silent until the shortcut is pressed.
-                argv.insert(1, "--idle-on-start".to_string());
-                if let Err(e) = spawn_daemon(&argv) {
-                    eprintln!("⚠ Could not pre-start the {} daemon: {e}", kind.as_str());
-                }
+        let already = dictation_slots()
+            .iter()
+            .any(|slot| control::is_running(*slot));
+        if !already {
+            let mut argv = toggle_daemon_argv();
+            argv.insert(1, "--idle-on-start".to_string());
+            if let Err(e) = spawn_daemon(&argv) {
+                eprintln!("⚠ Could not pre-start the daemon: {e}");
             }
         }
     }
 
     println!("Dictate hotkey agent listening:");
-    println!("  {live_key} → live typing");
-    println!("  {smart_key} → smart paste");
+    println!("  {key} → dictate");
 
     std::thread::spawn(move || {
-        let result = platform::hotkeys::run_loop(&specs, |id| {
-            let kind = if id == ToggleKind::Smart as i32 {
-                ToggleKind::Smart
-            } else {
-                ToggleKind::Live
-            };
-            if let Err(e) = run_toggle_daemon(kind) {
-                eprintln!("⚠ {} toggle failed: {e}", kind.as_str());
+        let result = platform::hotkeys::run_loop(&specs, |_id| {
+            if let Err(e) = run_toggle_daemon(None) {
+                eprintln!("⚠ toggle failed: {e}");
             }
         });
         if let Err(e) = result {
             eprintln!("⚠ Hotkey registration failed: {e}");
             eprintln!("  Windows reserves some combinations (Win+R opens Run).");
-            eprintln!("  Pick others: dictate config set SHORTCUT_KEY_LIVE 'CTRL,ALT,R'");
+            eprintln!("  Pick another: dictate config set SHORTCUT_KEY_LIVE 'CTRL,ALT,R'");
             std::process::exit(1);
         }
     });
@@ -1193,28 +1024,26 @@ pub async fn run_hotkey_agent(warm: bool, env_path: &Path) -> Result<()> {
 
 #[cfg(unix)]
 fn print_service_status() {
-    println!("Warm Dictate daemons:");
-    for (name, label) in [(LIVE_SERVICE, "Live"), (SMART_SERVICE, "Smart")] {
-        let installed = service_path(name).exists();
-        let active = service_active(name);
-        let marker = if active {
-            "✓"
-        } else if installed {
-            "!"
-        } else {
-            "✗"
-        };
-        let state = if active {
-            "active"
-        } else if installed {
-            "installed but not active"
-        } else {
-            "not installed"
-        };
-        println!("{marker} {label}: {state} ({name})");
-    }
-    if !service_active(LIVE_SERVICE) || !service_active(SMART_SERVICE) {
-        println!("  Run: dictate autostart install");
+    println!("Warm Dictate daemon:");
+    let installed = service_path(DAEMON_SERVICE).exists();
+    let active = service_active(DAEMON_SERVICE);
+    let marker = if active {
+        "✓"
+    } else if installed {
+        "!"
+    } else {
+        "✗"
+    };
+    let state = if active {
+        "active"
+    } else if installed {
+        "installed but not active"
+    } else {
+        "not installed"
+    };
+    println!("{marker} Dictation: {state} ({DAEMON_SERVICE})");
+    if !service_active(DAEMON_SERVICE) {
+        println!("  Run: dictate setup");
     }
 }
 
@@ -1237,23 +1066,21 @@ fn gnome_binding(key: &str) -> String {
     format!("{}{}", mods.join(""), keycap)
 }
 
-fn read_config_keys(env_path: &Path) -> Result<(String, String)> {
+fn shortcut_key_to_bind(env_path: &Path) -> Result<String> {
     let path = env_path.to_path_buf();
-    let (default_live, default_smart) = default_shortcut_keys();
-    let live =
-        read_config_value(&path, "SHORTCUT_KEY_LIVE")?.unwrap_or_else(|| default_live.to_string());
-    let smart = read_config_value(&path, "SHORTCUT_KEY_SMART")?
-        .unwrap_or_else(|| default_smart.to_string());
-    Ok((live, smart))
+    Ok(read_config_value(&path, "SHORTCUT_KEY_LIVE")?
+        .or(read_config_value(&path, "SHORTCUT_KEY")?)
+        .unwrap_or_else(|| default_shortcut_key().to_string()))
 }
 
-/// Write GNOME custom-keybindings for live + smart (`dictate toggle …`).
+/// Write a GNOME custom-keybinding for `dictate`.
 pub fn install_gnome_shortcuts(env_path: &Path) -> Result<()> {
     let schema = "org.gnome.settings-daemon.plugins.media-keys";
     let base = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings";
+    let dictate_path = format!("{base}/dictate/");
     let live_path = format!("{base}/dictate-live/");
     let smart_path = format!("{base}/dictate-smart/");
-    let (live_key, smart_key) = read_config_keys(env_path)?;
+    let primary = shortcut_key_to_bind(env_path)?;
 
     let list = ProcessCommand::new("gsettings")
         .args(["get", schema, "custom-keybindings"])
@@ -1275,10 +1102,8 @@ pub fn install_gnome_shortcuts(env_path: &Path) -> Result<()> {
     } else {
         Vec::new()
     };
-    for p in [&live_path, &smart_path] {
-        if !paths.iter().any(|x| x == p) {
-            paths.push(p.clone());
-        }
+    if !paths.iter().any(|x| x == &dictate_path || x == &live_path) {
+        paths.push(dictate_path.clone());
     }
     let list_val = format!(
         "[{}]",
@@ -1296,43 +1121,31 @@ pub fn install_gnome_shortcuts(env_path: &Path) -> Result<()> {
     }
 
     let bind_schema = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:";
-    for (path, name, binding, toggle) in [
-        (
-            live_path.as_str(),
-            "Dictate live typing",
-            gnome_binding(&live_key),
-            "live",
-        ),
-        (
-            smart_path.as_str(),
-            "Dictate smart paste",
-            gnome_binding(&smart_key),
-            "smart",
-        ),
+    let target = if paths.iter().any(|x| x == &live_path) {
+        live_path.clone()
+    } else {
+        dictate_path.clone()
+    };
+    let full = format!("{bind_schema}{target}");
+    for (key, value) in [
+        ("name", "Dictate"),
+        ("command", "dictate"),
+        ("binding", &gnome_binding(&primary)),
     ] {
-        let full = format!("{bind_schema}{path}");
         let status = ProcessCommand::new("gsettings")
-            .args(["set", &full, "name", name])
+            .args(["set", &full, key, value])
             .status()?;
         if !status.success() {
-            anyhow::bail!("gsettings failed to set shortcut name for {path}");
-        }
-        let status = ProcessCommand::new("gsettings")
-            .args(["set", &full, "command", &format!("dictate toggle {toggle}")])
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("gsettings failed to set shortcut command for {path}");
-        }
-        let status = ProcessCommand::new("gsettings")
-            .args(["set", &full, "binding", &binding])
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("gsettings failed to set shortcut binding for {path}");
+            anyhow::bail!("gsettings failed to set shortcut {key}");
         }
     }
-    println!("GNOME shortcuts installed (dictate toggle live / smart).");
-    println!("  Live:  {live_key} → dictate toggle live");
-    println!("  Smart: {smart_key} → dictate toggle smart");
+    if paths.iter().any(|x| x == &smart_path) {
+        let smart_full = format!("{bind_schema}{smart_path}");
+        let _ = ProcessCommand::new("gsettings")
+            .args(["set", &smart_full, "command", "dictate"])
+            .status();
+    }
+    println!("GNOME shortcut installed: {primary} → dictate");
     Ok(())
 }
 
@@ -1355,87 +1168,25 @@ pub fn print_shortcut(args: &ShortcutArgs, env_path: &Path) {
         }
         return;
     }
-    let cmd = shortcut_command(&args.mode, &args.profile);
-    let shell = toggle_shell(&cmd);
-
+    println!("Bind this command to your shortcut:");
+    println!("dictate");
     match args.desktop {
+        ShortcutDesktop::Gnome => {
+            println!("# Or: dictate setup (installs the GNOME binding)");
+        }
+        ShortcutDesktop::Windows => {
+            println!("# Windows: dictate setup  (installs the hotkey agent at login)");
+            println!("# Reserves Win+R — prefer CTRL,ALT,R");
+        }
         ShortcutDesktop::Hyprland => {
             let key = args.key.replace(',', ", ");
-            println!(
-                "# Dictate — profile {} ({})",
-                args.profile,
-                mode_name(&args.mode)
-            );
-            println!("bind = {key}, exec, {shell}");
-            if let Some(mod_part) = args.key.split(',').next() {
-                let char_part = args.key.split(',').nth(1).unwrap_or("R");
-                println!("# Clipboard variant:");
-                println!(
-                    "# bind = {mod_part} SHIFT, {char_part}, exec, \
-                     pgrep -f '[d]ictate --daemon --pipe-to wl-copy' >/dev/null && pkill -f --signal SIGUSR1 '[d]ictate --daemon --pipe-to wl-copy' \
-                     || (dictate --daemon --pipe-to wl-copy &)"
-                );
-            }
+            println!("# Hyprland: bind = {key}, exec, dictate");
         }
         ShortcutDesktop::Niri => {
             let key = args.key.replace(',', "+");
-            println!(
-                "// Dictate — profile {} ({})",
-                args.profile,
-                mode_name(&args.mode)
-            );
-            println!("{key} {{ spawn \"sh\" \"-c\" \"{shell}\"; }}");
-            if let Some(mod_part) = args.key.split(',').next() {
-                let char_part = args.key.split(',').nth(1).unwrap_or("R");
-                println!("// Clipboard variant:");
-                println!(
-                    "// Shift+{mod_part}+{char_part} {{ spawn \"sh\" \"-c\" \
-                     \"pgrep -f '[d]ictate --daemon --pipe-to wl-copy' >/dev/null && pkill -f --signal SIGUSR1 '[d]ictate --daemon --pipe-to wl-copy' \
-                     || (dictate --daemon --pipe-to wl-copy &)\"; }}"
-                );
-            }
+            println!("# Niri: {key} {{ spawn \"dictate\"; }}");
         }
-        ShortcutDesktop::Gnome => {
-            let toggle = if args.profile == "smart_paste" || args.profile == "smart" {
-                "smart"
-            } else {
-                "live"
-            };
-            println!("# GNOME Custom Shortcut");
-            println!("# 1. Settings → Keyboard → Keyboard Shortcuts");
-            println!("# 2. Scroll to bottom, click +");
-            println!("# 3. Name: Dictate ({})", mode_name(&args.mode));
-            println!("#    Command: dictate toggle {toggle}");
-            println!("#    Shortcut: {}", args.key);
-            println!("# Or: dictate shortcuts gnome --install");
-        }
-        ShortcutDesktop::Windows => {
-            let toggle = if args.profile == "smart_paste" || args.profile == "smart" {
-                "smart"
-            } else {
-                "live"
-            };
-            println!("# Windows — dictate holds the shortcut itself, no OS settings needed");
-            println!("# 1. dictate config set SHORTCUT_KEY_LIVE '{}'", args.key);
-            println!("# 2. dictate autostart install   (hotkey agent at login)");
-            println!("#    or run it in this terminal: dictate hotkeys --warm");
-            println!("# Windows reserves Win+R, Win+E, Win+L — prefer CTRL,ALT,<key>");
-            println!("dictate toggle {toggle}");
-        }
-        ShortcutDesktop::Kde | ShortcutDesktop::Sway => {
-            let name = match args.desktop {
-                ShortcutDesktop::Kde => "KDE",
-                _ => "Sway",
-            };
-            println!("# {name} Custom Shortcut");
-            println!("# Add this command as a custom shortcut:");
-            println!("{shell}");
-        }
-        ShortcutDesktop::Other => {
-            println!("# Generic Custom Shortcut");
-            println!("# Add this command in your desktop settings:");
-            println!("{shell}");
-        }
+        _ => {}
     }
 }
 
@@ -1444,36 +1195,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn auto_shortcut_uses_daemon_and_configured_output() {
-        let cmd = shortcut_command(&ShortcutMode::Auto, "segmented");
-        assert_eq!(cmd, "dictate --daemon");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn explicit_type_shortcut_still_available() {
-        let cmd = shortcut_command(&ShortcutMode::Type, "segmented");
-        assert_eq!(cmd, "dictate --daemon --pipe-to ydotool type --file -");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn explicit_type_shortcut_uses_the_in_process_sink() {
-        let cmd = shortcut_command(&ShortcutMode::Type, "segmented");
-        assert_eq!(cmd, "dictate --daemon --pipe-to @dictate type");
-    }
-
-    #[test]
     fn toggle_argv_carries_the_platform_output_sink() {
-        let argv = toggle_daemon_argv(ToggleKind::Live);
-        assert!(argv[1..].starts_with(&[
-            "--daemon".to_string(),
-            "--mode".to_string(),
-            "live".to_string(),
-            "--pipe-to".to_string(),
-        ]));
+        let argv = toggle_daemon_argv();
+        assert!(argv[1..].starts_with(&["--daemon".to_string(), "--pipe-to".to_string()]));
         assert_eq!(
-            argv[5..].to_vec(),
+            argv[3..].to_vec(),
             platform::pipe_to_for_mode("type").unwrap()
         );
     }
@@ -1491,16 +1217,6 @@ mod tests {
         assert_eq!(
             editor_argv("", "notepad"),
             ("notepad".to_string(), Vec::<String>::new())
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn live_shortcut_targets_live_daemon_only() {
-        let cmd = shortcut_command(&ShortcutMode::Type, "live_typing");
-        assert_eq!(
-            toggle_shell(&cmd),
-            "pgrep -f '[d]ictate --daemon --mode live --pipe-to ydotool type --file -' >/dev/null && pkill -f --signal SIGUSR1 '[d]ictate --daemon --mode live --pipe-to ydotool type --file -' || (dictate --daemon --mode live --pipe-to ydotool type --file - &)"
         );
     }
 }

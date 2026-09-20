@@ -15,11 +15,11 @@ The installer will:
 2. Download the latest binary from GitHub Releases, or build from source
 3. Install `dictate` locally
 4. Run **`dictate setup`** to configure interactively
-5. Print **one** shortcut for `dictate --daemon`
+5. Print **one** shortcut: bind your key to `dictate`
 
-**Recommended:** **`dictate setup`** then **`dictate doctor`**.
+**Recommended:** **`dictate setup`** then **`dictate doctor`**. After that, press your shortcut (or run `dictate`) to start and stop.
 
-**Default behavior:** speak in phrases; after each pause, dictate inserts **polished, context-aware** text (voice commands like “scratch that” work on what was already typed). Run **`dictate --daemon`** and toggle recording with your shortcut.
+**Default behavior:** speak; words appear as you type; pauses polish; say “scratch that” to edit. Bind your shortcut to **`dictate`**.
 
 Setup asks:
 - **Provider** — mistral (recommended for realtime + polish), groq, or local
@@ -148,7 +148,7 @@ irm https://dictate.adityamer.dev/install.ps1 | iex
 The installer will:
 1. Download the latest binary from GitHub Releases, or build from source
 2. Install `dictate.exe` to `~/bin` and add it to your user `PATH`
-3. Run **`dictate config wizard`** to configure interactively (skipped with `$env:DICTATE_SKIP_WIZARD = "yes"`)
+3. Run **`dictate setup`** to configure interactively (skipped with `$env:DICTATE_SKIP_WIZARD = "yes"`)
 
 Then:
 
@@ -205,48 +205,29 @@ dictate doctor
 | `%APPDATA%\dictate\text.toml` | Dictionary, snippets, cleanup, `[polish]` |
 | `%APPDATA%\dictate\` | Models, history, scratchpad |
 
-`SHORTCUT_OUTPUT` on Windows: `type` = Win32 `SendInput` (Unicode) into the focused window · `paste` = clipboard + Ctrl+V · `clipboard` = Win32 clipboard · `stdout` = print. Command mode (`dictate --command`) reads the Win32 clipboard directly.
+`SHORTCUT_OUTPUT` on Windows: `type` = Win32 `SendInput` (Unicode) into the focused window · `paste` = clipboard + Ctrl+V · `clipboard` = Win32 clipboard · `stdout` = print. Clipboard commands run on the same shortcut when you copied text first.
 
 ### Shortcuts
 
-**`Win+R` is reserved by Windows (Run dialog), so the default `SUPER,R` will not register.** Change both keys:
+**`Win+R` is reserved by Windows (Run dialog), so the default `SUPER,R` will not register.** Set:
 
 ```powershell
 dictate config set SHORTCUT_KEY_LIVE  "CTRL,ALT,R"
-dictate config set SHORTCUT_KEY_SMART "CTRL,ALT,SHIFT,R"
 ```
 
 Shortcut strings accept `SUPER,R`, `Meta+Shift+R`, and `<Super>r` styles; a modifier is required.
 
-```powershell
-dictate hotkeys            # background agent: RegisterHotKey → dictate toggle live | smart
-dictate hotkeys --warm     # also pre-starts idle daemons so the first press is instant
-dictate shortcuts windows  # printed setup guidance
-```
-
-### Autostart
-
-```powershell
-dictate autostart install   # Run-key entry + starts the agent now
-dictate autostart status
-dictate autostart remove
-```
-
-Registers the hotkey agent under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` via a hidden `wscript` launcher at `%APPDATA%\dictate\hotkey-agent.vbs`. (`dictate shortcuts windows --install` is an alias.) On Linux the same command manages systemd user services.
-
-### Daemon control
-
-No `SIGUSR1`. Daemons listen on `\\.\pipe\dictate-live`, `\\.\pipe\dictate-smart`, `\\.\pipe\dictate-main`; `dictate toggle live|smart` connects and sends a toggle. Ctrl+C stops a daemon.
+`dictate setup` installs the hotkey agent at login (Ctrl+Alt+R by default). The shortcut runs `dictate`.
 
 ### Windows troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
-| Hotkey never fires | Combo is taken by Windows or another app (classically `Win+R`) — pick another and restart `dictate hotkeys` |
+| Hotkey never fires | Combo is taken by Windows or another app (classically `Win+R`) — pick another and run `dictate setup` |
 | Nothing typed into an app running as Administrator | `SendInput` cannot reach elevated windows unless dictate is elevated too; run dictate as Administrator or use `SHORTCUT_OUTPUT=clipboard` |
 | `dictate words` opens Notepad instead of the GUI | Expected — the `words-ui` GTK build is Linux-only; set `$EDITOR` to change the editor |
-| First key press is slow | `dictate hotkeys --warm`, or `dictate autostart install` |
-| `toggle` reports no daemon | Start `dictate --daemon --mode live`, or use `--warm` / autostart |
+| First key press is slow | Run `dictate setup` and accept login autostart |
+| Nothing happens on the shortcut | Run `dictate doctor`, then `dictate setup` |
 
 ---
 
@@ -263,29 +244,24 @@ mkdir -p ~/.config/dictate     # Windows: %APPDATA%\dictate
 ```bash
 dictate setup              # guided menus (recommended)
 dictate setup --quick      # fewer questions (defaults to mistral)
-dictate config wizard      # scriptable flags for CI/agents
-dictate doctor             # check API keys, profile, wl-copy/ydotool
+dictate doctor             # check API keys, ydotool / Windows input
 ```
 
-Non-interactive wizard example:
+Non-interactive example:
 
 ```bash
-dictate config wizard \
-  --provider mistral \
-  --profile segmented \
-  --mistral-api-key "$MISTRAL_API_KEY" \
-  --language auto \
-  --output-mode type \
-  --desktop hyprland \
-  --shortcut-key SUPER,R \
-  --audio-feedback true
+dictate config set TRANSCRIPTION_PROVIDER mistral
+dictate config set MISTRAL_API_KEY "$MISTRAL_API_KEY"
+dictate config set SHORTCUT_OUTPUT type
+dictate config set SHORTCUT_DESKTOP hyprland
+dictate config set SHORTCUT_KEY_LIVE SUPER,R
 ```
 
-For legacy **smart paste** (one shot at end), use `--profile smart_paste`. For Groq: `--provider groq --groq-api-key "$GROQ_API_KEY"`. For local: `--provider local --whisper-model ggml-base.en.bin`, then `dictate --download-model`.
+For Groq: `dictate config set TRANSCRIPTION_PROVIDER groq` and `GROQ_API_KEY`. For local Whisper: `TRANSCRIPTION_PROVIDER=local` (Linux `--features local` build).
 
-Wizard / setup sets:
-- **`DICTATE_PROFILE`** — default `segmented` (omit for new installs); legacy: `live_typing`, `smart_paste`, `batch_clip`
-- **`SHORTCUT_OUTPUT`** — default pipe when your shortcut runs plain `dictate` (also used to generate bind lines)
+Setup sets:
+- **`DICTATE_PROFILE`** — default `segmented` (one dictation product; `live_typing` / `smart_paste` are aliases)
+- **`SHORTCUT_OUTPUT`** — default `type` (needed for voice edits to backspace)
 - Provider, API key, language, desktop, shortcut key, beeps
 
 Legacy: `BATCH_MODE=true` still maps to batch-style behavior; prefer `DICTATE_PROFILE=batch_clip`.
@@ -332,8 +308,7 @@ BEEP_VOLUME=0.1
 ### Using Config Commands
 
 ```bash
-dictate config set profile smart_paste
-dictate config set shortcut-output paste
+dictate config set shortcut-output type
 dictate config set provider mistral
 dictate config set mistral-api-key "$MISTRAL_API_KEY"
 dictate config get
@@ -405,18 +380,14 @@ If you want offline transcription (your audio never leaves your machine):
 
 ## Composer Shortcuts
 
-Wayland compositors. On Windows use `dictate hotkeys` / `dictate autostart install` — see [Windows](#windows).
+Wayland compositors. On Windows, `dictate setup` installs the hotkey agent — see [Windows](#windows).
 
 ### Hyprland
 
 Add to `~/.config/hypr/hyprland.conf`:
 
 ```bash
-# Direct typing
-bind = SUPER, R, exec, pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to ydotool type --file - &)
-
-# Clipboard copy
-bind = SUPER SHIFT, R, exec, pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to wl-copy &)
+bind = SUPER, R, exec, dictate
 ```
 
 ### Niri
@@ -425,21 +396,11 @@ Add to `~/.config/niri/config.kdl`:
 
 ```kdl
 binds {
-    // Direct typing
-    Mod+R { spawn "sh" "-c" "pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to ydotool type --file - &)"; }
-    
-    // Clipboard copy
-    Mod+Shift+R { spawn "sh" "-c" "pgrep -x dictate >/dev/null && pkill --signal SIGUSR1 dictate || (dictate --pipe-to wl-copy &)"; }
+    Mod+R { spawn "dictate"; }
 }
 ```
 
-### Generate Shortcuts Automatically
-
-```bash
-dictate shortcuts hyprland --profile segmented --mode type --key SUPER,R
-```
-
-Default **`segmented`** snippets include **`--daemon`** so the process stays warm between key presses.
+GNOME and Windows: `dictate setup` registers the key. Bind the key to `dictate`.
 
 ---
 
@@ -470,7 +431,7 @@ Set `ENABLE_AUDIO_FEEDBACK=false` to disable all beeps.
 
 ### "MISTRAL_API_KEY is required"
 - Create `~/.config/dictate/.env` with your API key
-- Or use `dictate config wizard` to set it up
+- Or use `dictate setup` to set it up
 
 ### "Failed to download model"
 - Check internet connection
@@ -484,7 +445,7 @@ Set `ENABLE_AUDIO_FEEDBACK=false` to disable all beeps.
 
 ## Updates
 
-`dictate update` checks the latest GitHub Release and tells you how to reinstall. `dictate doctor` reports it too, and every other command nudges on stderr when a newer release is already known (cached for 24h — the recording path never touches the network). Opt out with `DICTATE_NO_UPDATE_CHECK=1`.
+`dictate doctor` reports when a newer GitHub Release is available. Opt out with `DICTATE_NO_UPDATE_CHECK=1`.
 
 ---
 
@@ -516,7 +477,7 @@ rmdir /s /q %APPDATA%\dictate     # config, models, history, scratchpad
 
 ## For AI Coding Agents
 
-AI agents should ask the user the setup questions first, install with the interactive wizard skipped, then run `dictate config wizard` with flags so setup completes without asking the user to do anything manually.
+AI agents should ask the user the setup questions first, install with the interactive wizard skipped, then run `dictate config set` so setup completes without asking the user to do anything manually.
 
 Ask the user:
 1. **Provider** — `mistral` (recommended), `groq`, or `local`?
@@ -532,17 +493,14 @@ Then run:
 ```bash
 curl -fsSL https://dictate.adityamer.dev/install.sh | DICTATE_SKIP_WIZARD=yes sh
 
-dictate config wizard \
-  --provider mistral \
-  --profile segmented \
-  --mistral-api-key "$MISTRAL_API_KEY" \
-  --language auto \
-  --output-mode type \
-  --desktop hyprland \
-  --shortcut-key SUPER,R
+dictate config set TRANSCRIPTION_PROVIDER mistral
+dictate config set MISTRAL_API_KEY "$MISTRAL_API_KEY"
+dictate config set SHORTCUT_OUTPUT type
+dictate config set SHORTCUT_DESKTOP hyprland
+dictate config set SHORTCUT_KEY_LIVE SUPER,R
 
-dictate shortcuts hyprland --profile segmented --mode type --key SUPER,R
+# Hyprland: bind = SUPER, R, exec, dictate
 dictate doctor
 ```
 
-For Groq, use `--provider groq --groq-api-key "$GROQ_API_KEY" --groq-model whisper-large-v3-turbo`. For local Whisper, use `--provider local --whisper-model ggml-base.en.bin`, then run `dictate --download-model`.
+For Groq: `dictate config set TRANSCRIPTION_PROVIDER groq` and `GROQ_API_KEY`. For local Whisper (Linux `--features local`): `TRANSCRIPTION_PROVIDER=local`.

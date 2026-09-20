@@ -13,7 +13,7 @@ Open-source, local-first, CLI-native. Ignore billing, teams, enterprise complian
 | 3 | **Text cleanup** | `text.toml` → `[cleanup]` |
 | 4 | **Command mode** | `DICTATE_PROFILE=command`, or the same shortcut when clipboard already has text |
 | 5 | **Developer dictation modes** | `--dictation-mode` (markdown, git, terminal, code symbols, paths) |
-| — | **Default dictation** | One shortcut: type as you speak, voice edits, polish on pause |
+| — | **Default dictation** | One shortcut: speak, stop, one polished insert (corrections + formatting) |
 | — | **LLM polish** | `text.toml` → `[polish]` (per utterance; also whole-clip on one-shot) |
 | — | **Setup & health** | `dictate setup`, `dictate doctor`, `dictate config get|set|edit` |
 
@@ -21,7 +21,7 @@ Open-source, local-first, CLI-native. Ignore billing, teams, enterprise complian
 
 ```text
 audio → transcription → dictionary → inline fixes → snippets → cleanup
-  → developer mode → [LLM polish per segment] → type / paste / clipboard / stdout
+  → developer mode → [LLM polish on stop] → type / paste / clipboard / stdout
 ```
 
 **Initial MVP** (snippets, dictionary, order, tests): done in `src/text_processing.rs`.
@@ -30,7 +30,7 @@ audio → transcription → dictionary → inline fixes → snippets → cleanup
 
 ### Shipped (single default path)
 
-- One dictation product: type as you speak, voice edits (`scratch that`, `no I mean …`), polish on pause.
+- One dictation product: speak, stop; polish applies self-corrections and formatting to the whole take.
 - One shortcut in `dictate setup`. Press the key or run `dictate`.
 - `DICTATE_PROFILE=live_typing|smart_paste` are aliases of that product.
 

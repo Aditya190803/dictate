@@ -31,7 +31,7 @@ impl DictateMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DictateProfile {
-    /// Default product: type as you speak, voice corrections, polish on pause.
+    /// Default product: speak, stop, insert one polished take (corrections + formatting).
     #[default]
     Segmented,
     /// Alias of [`Self::Segmented`] (kept so old configs deserialize).
@@ -74,7 +74,7 @@ impl DictateProfile {
     pub fn description(self) -> &'static str {
         match self {
             Self::Segmented | Self::LiveTyping | Self::SmartPaste => {
-                "Words appear as you speak; pauses polish the last phrase; say scratch that to edit."
+                "Speak, stop; one polished insert. Self-corrections and spoken formatting apply to the whole take."
             }
             Self::BatchClip => "Record, stop, transcribe once with local cleanup only.",
             Self::Command => "Speak an instruction; applies to clipboard text (e.g. fix grammar).",
@@ -123,9 +123,9 @@ impl DictateProfile {
         self.is_dictation()
     }
 
-    /// Word-by-word typing when the STT provider streams deltas (Mistral).
+    /// Word-by-word typing while speaking. Off: corrections need the full take.
     pub fn types_live_deltas(self) -> bool {
-        self.is_dictation()
+        false
     }
 
     pub fn is_command_mode(self) -> bool {
@@ -173,7 +173,7 @@ mod tests {
     fn polish_flags_by_profile() {
         assert!(DictateProfile::Segmented.uses_llm_polish());
         assert!(DictateProfile::Segmented.uses_segment_polish());
-        assert!(DictateProfile::Segmented.types_live_deltas());
+        assert!(!DictateProfile::Segmented.types_live_deltas());
         assert!(!DictateProfile::BatchClip.uses_llm_polish());
         assert!(!DictateProfile::Command.types_live_deltas());
         assert_eq!(DictateMode::Live.profile(), DictateProfile::Segmented);

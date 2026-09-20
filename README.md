@@ -95,6 +95,16 @@ dictate config set KEY value
 
 Bind `dictate` to a shortcut. Clipboard commands run on that same press when you copied text first.
 
+## Desktop UI
+
+Optional Electron control panel (listen, dictionary, settings). Needs the `dictate` binary on PATH. Useful on Windows, where the GTK dictionary UI is not built.
+
+```bash
+cd desktop
+npm install
+npm start
+```
+
 ## Requirements
 
 - Mistral or Groq key **or** local model

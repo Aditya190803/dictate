@@ -38,6 +38,12 @@ site/out/
 site/node_modules/
 site/.vercel
 
+# Desktop (Electron) UI
+desktop/node_modules/
+desktop/out/
+desktop/smoke.png
+desktop/smoke-*.png
+
 # Logs
 *.log
 

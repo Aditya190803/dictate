@@ -19,7 +19,7 @@ The installer will:
 
 **Recommended:** **`dictate setup`** then **`dictate doctor`**. After that, press your shortcut (or run `dictate`) to start and stop.
 
-**Default behavior:** speak; words appear as you type; pauses polish; say “scratch that” to edit. Bind your shortcut to **`dictate`**.
+**Default behavior:** speak, stop; one polished insert with self-corrections and spoken formatting. Bind your shortcut to **`dictate`**.
 
 Setup asks:
 - **Provider** — mistral (recommended for realtime + polish), groq, or local

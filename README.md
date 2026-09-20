@@ -1,6 +1,6 @@
 # dictate
 
-Speech-to-text for Linux (Wayland) and Windows: one shortcut, daemon-friendly, stdout-first. Words appear as you speak, pauses polish the last phrase, and voice edits (`scratch that`, `no I mean …`) rewrite what was just typed.
+Speech-to-text for Linux (Wayland) and Windows: one shortcut, daemon-friendly, stdout-first. Speak, stop, and one polished take lands — self-corrections (`no wait, it’s Wednesday`) and spoken formatting included.
 
 Not [Wispr Flow](https://wisprflow.ai/) — see [docs/wispr-flow-gap.md](docs/wispr-flow-gap.md).
 

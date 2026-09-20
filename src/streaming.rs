@@ -1,7 +1,6 @@
 use crate::audio::AudioRecorder;
 use crate::audio_processing::AudioProcessor;
 use crate::beep::{BeepConfig, BeepPlayer, BeepType};
-use crate::command;
 use crate::config::Config;
 use crate::context_session::handle_live_delta;
 use crate::segment_output::{emit_finalized_segment, finalize_live_utterance};
@@ -179,7 +178,7 @@ pub async fn run_stream(
         );
     }
 
-    eprintln!("🎙️  dictate — polished segments after each pause");
+    eprintln!("🎙️  dictate — speak, stop, one polished insert");
     eprintln!("   {} to stop", crate::control::TOGGLE_HINT);
 
     let beep_config = BeepConfig {
@@ -210,19 +209,32 @@ pub async fn run_stream(
     let worker_beep = BeepPlayer::new(beep_config.clone())?;
     let session_buffer = Arc::new(Mutex::new(TranscriptBuffer::new()));
     let worker = tokio::spawn(async move {
+        let mut take = String::new();
         while let Some(segment) = segment_rx.recv().await {
-            if let Err(e) = process_segment(
+            match transcribe_vad_segment(
                 segment,
                 &worker_config,
                 Arc::clone(&provider_for_worker),
-                worker_pipe.clone(),
                 &worker_beep,
-                &worker_mode,
-                Arc::clone(&session_buffer),
             )
             .await
             {
-                eprintln!("❌ Segment processing error: {}", e);
+                Ok(text) => push_transcript(&mut take, &text),
+                Err(e) => eprintln!("❌ Segment processing error: {}", e),
+            }
+        }
+        if !take.is_empty() {
+            if let Err(e) = emit_finalized_segment(
+                &worker_config,
+                worker_pipe,
+                &session_buffer,
+                &take,
+                &worker_mode,
+                &worker_beep,
+            )
+            .await
+            {
+                eprintln!("❌ Segment output failed: {e}");
             }
         }
     });
@@ -289,6 +301,24 @@ pub async fn run_stream(
 
 fn peak_audio_level(samples: &[f32]) -> f32 {
     samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max)
+}
+
+fn push_transcript(dst: &mut String, piece: &str) {
+    let piece = piece.trim();
+    if piece.is_empty() {
+        return;
+    }
+    if !dst.is_empty() && !dst.ends_with(char::is_whitespace) {
+        dst.push(' ');
+    }
+    dst.push_str(piece);
+}
+
+fn take_plus_tail(take: &str, tail: &str) -> String {
+    let mut out = String::new();
+    push_transcript(&mut out, take);
+    push_transcript(&mut out, tail);
+    out
 }
 
 fn should_use_mistral_realtime(config: &Config) -> bool {
@@ -412,7 +442,7 @@ async fn run_deepgram_realtime_inner(
 
     let type_deltas = config.profile.types_live_deltas();
 
-    eprintln!("🎙️  dictate — Deepgram realtime");
+    eprintln!("🎙️  dictate — speak, stop, one polished insert");
     eprintln!("   Model: {}", config.deepgram_model);
     if active_on_start {
         eprintln!("   {} to stop", crate::control::TOGGLE_HINT);
@@ -478,16 +508,38 @@ async fn run_deepgram_realtime_inner(
     let pipe_owned = pipe_command.cloned();
     let dictation_mode = dictation_mode.to_string();
     let config = config.clone();
-    let mut preview_tail = String::new();
+    let mut take = String::new();
+    let mut drain_flush_until: Option<Instant> = None;
     let mut last_audio_time = Instant::now();
     let mut last_ws_msg = Instant::now();
     let mut first_audio_logged = false;
+    let mut utterance_start = 0usize;
     // Deepgram closes an idle socket after ~10s of silence; KeepAlive holds a
     // warm daemon's connection open between dictations.
     let mut keepalive = tokio::time::interval(Duration::from_secs(8));
     keepalive.tick().await;
 
     loop {
+        if let Some(until) = drain_flush_until {
+            if Instant::now() >= until {
+                drain_flush_until = None;
+                let text = std::mem::take(&mut take);
+                if !text.trim().is_empty() {
+                    emit_preview_flush(
+                        text,
+                        &config,
+                        pipe_owned.clone(),
+                        Arc::clone(&session_buffer),
+                        dictation_mode.clone(),
+                        &beep_player,
+                        type_deltas,
+                        &mut utterance_start,
+                    )
+                    .await;
+                }
+            }
+        }
+
         let audio_fut = async {
             match audio_rx.as_mut() {
                 Some(rx) => rx.recv().await,
@@ -514,6 +566,9 @@ async fn run_deepgram_realtime_inner(
                 if audio_rx.is_none() {
                     match recorder.start_continuous() {
                         Ok(rx) => {
+                            take.clear();
+                            session_buffer.lock().await.clear();
+                            utterance_start = 0;
                             audio_rx = Some(rx);
                             // Only now does the recorder know the device's real rate.
                             capture_rate = recorder.capture_sample_rate();
@@ -535,6 +590,8 @@ async fn run_deepgram_realtime_inner(
                     recorder.stop_recording().ok();
                     drop(audio_rx.take());
                     beep_player.play_async(BeepType::RecordingStop).await.ok();
+                    drain_flush_until =
+                        Some(Instant::now() + Duration::from_millis(3500));
                     eprintln!("⏸️  Stopped; waiting for the next toggle");
                 }
             }
@@ -582,17 +639,7 @@ async fn run_deepgram_realtime_inner(
                                     .and_then(|t| t.as_str())
                                     .unwrap_or("");
                                 if !transcript.trim().is_empty() {
-                                    handle_realtime_segment(
-                                        transcript,
-                                        &config,
-                                        type_deltas,
-                                        pipe_owned.as_ref(),
-                                        &session_buffer,
-                                        &dictation_mode,
-                                        &beep_player,
-                                        &mut preview_tail,
-                                    )
-                                    .await;
+                                    push_transcript(&mut take, transcript);
                                 }
                             }
                             Some("Metadata") | Some("SpeechStarted") | Some("UtteranceEnd") => {}
@@ -783,43 +830,6 @@ async fn emit_preview_flush(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn handle_realtime_segment(
-    segment: &str,
-    config: &Config,
-    type_deltas: bool,
-    pipe_owned: Option<&Vec<String>>,
-    session_buffer: &Arc<Mutex<TranscriptBuffer>>,
-    dictation_mode: &str,
-    beep_player: &BeepPlayer,
-    preview_tail: &mut String,
-) {
-    let segment = segment.trim();
-    if segment.is_empty() {
-        return;
-    }
-    preview_tail.clear();
-    if config.profile.uses_segment_polish() {
-        if let Err(e) = emit_finalized_segment(
-            config,
-            pipe_owned.cloned(),
-            session_buffer,
-            segment,
-            dictation_mode,
-            beep_player,
-        )
-        .await
-        {
-            eprintln!("❌ Segment output failed: {e}");
-        }
-    } else if type_deltas {
-        let segment = crate::text_processing::process_text(segment, &config.text_processing);
-        emit_text(&segment, pipe_owned).await;
-    } else {
-        eprintln!("\n📝 {segment}");
-    }
-}
-
 async fn emit_live_delta(
     text: &str,
     config: &Config,
@@ -836,24 +846,6 @@ async fn emit_live_delta(
         Ok(true) => *utterance_start = buffer.text().len(),
         Ok(false) => {}
         Err(e) => eprintln!("❌ Live output failed: {e}"),
-    }
-}
-
-async fn emit_text(text: &str, pipe_command: Option<&Vec<String>>) {
-    // Preserve whitespace in realtime deltas. Providers often send spaces as
-    // leading/trailing characters; trimming here makes typed words jam together.
-    if text.is_empty() {
-        return;
-    }
-
-    if let Some(cmd) = pipe_command {
-        if let Err(e) = command::execute_with_input(cmd, text).await {
-            eprintln!("❌ Pipe command failed: {}", e);
-        }
-    } else {
-        print!("{}", text);
-        use std::io::Write;
-        std::io::stdout().flush().ok();
     }
 }
 
@@ -907,7 +899,7 @@ async fn run_mistral_realtime_inner(
 
     let type_deltas = config.profile.types_live_deltas();
 
-    eprintln!("🎙️  dictate — type as you speak, polish on pause");
+    eprintln!("🎙️  dictate — speak, stop, one polished insert");
     eprintln!("   Model: {}", config.mistral_realtime_model);
     if active_on_start {
         eprintln!("   {} to stop", crate::control::TOGGLE_HINT);
@@ -990,6 +982,7 @@ async fn run_mistral_realtime_inner(
     let pipe_owned = pipe_command.cloned();
     let dictation_mode = dictation_mode.to_string();
     let config = config.clone();
+    let mut take = String::new();
     let mut preview_tail = String::new();
     let mut utterance_start = 0usize;
     let mut audio_send_ready = true;
@@ -1004,7 +997,10 @@ async fn run_mistral_realtime_inner(
         if let Some(until) = drain_flush_until {
             if Instant::now() >= until {
                 drain_flush_until = None;
-                let text = std::mem::take(&mut preview_tail);
+                let text = take_plus_tail(
+                    &std::mem::take(&mut take),
+                    &std::mem::take(&mut preview_tail),
+                );
                 if type_deltas || !text.trim().is_empty() {
                     emit_preview_flush(
                         text,
@@ -1043,7 +1039,10 @@ async fn run_mistral_realtime_inner(
 
                 if !active_on_start && audio_rx.is_none() {
                     if drain_flush_until.take().is_some() {
-                        let pending = std::mem::take(&mut preview_tail);
+                        let pending = take_plus_tail(
+                            &std::mem::take(&mut take),
+                            &std::mem::take(&mut preview_tail),
+                        );
                         if type_deltas || !pending.trim().is_empty() {
                             emit_preview_flush(
                                 pending,
@@ -1058,6 +1057,7 @@ async fn run_mistral_realtime_inner(
                             .await;
                         }
                     } else {
+                        take.clear();
                         preview_tail.clear();
                     }
                     session_buffer.lock().await.clear();
@@ -1075,7 +1075,10 @@ async fn run_mistral_realtime_inner(
                 active = !active;
                 if active {
                     if drain_flush_until.take().is_some() {
-                        let pending = std::mem::take(&mut preview_tail);
+                        let pending = take_plus_tail(
+                            &std::mem::take(&mut take),
+                            &std::mem::take(&mut preview_tail),
+                        );
                         if type_deltas || !pending.trim().is_empty() {
                             emit_preview_flush(
                                 pending,
@@ -1090,6 +1093,7 @@ async fn run_mistral_realtime_inner(
                             .await;
                         }
                     } else {
+                        take.clear();
                         preview_tail.clear();
                     }
                     session_buffer.lock().await.clear();
@@ -1162,17 +1166,8 @@ async fn run_mistral_realtime_inner(
                                     if let Some(segment) =
                                         event.get("text").and_then(|t| t.as_str())
                                     {
-                                        handle_realtime_segment(
-                                            segment,
-                                            &config,
-                                            type_deltas,
-                                            pipe_owned.as_ref(),
-                                            &session_buffer,
-                                            &dictation_mode,
-                                            &beep_player,
-                                            &mut preview_tail,
-                                        )
-                                        .await;
+                                        push_transcript(&mut take, segment);
+                                        preview_tail.clear();
                                     }
                                 }
                                 Some("transcription.done") => {
@@ -1189,25 +1184,8 @@ async fn run_mistral_realtime_inner(
                                         {
                                             eprintln!("❌ Live output failed: {e}");
                                         }
-                                    } else if !preview_tail.trim().is_empty() {
-                                        let tail = std::mem::take(&mut preview_tail);
-                                        if config.profile.uses_segment_polish() {
-                                            if let Err(e) = emit_finalized_segment(
-                                                &config,
-                                                pipe_owned.clone(),
-                                                &session_buffer,
-                                                &tail,
-                                                &dictation_mode,
-                                                &beep_player,
-                                            )
-                                            .await
-                                            {
-                                                eprintln!("❌ Segment output failed: {e}");
-                                            }
-                                        } else {
-                                            eprintln!("\n📝 {}", tail.trim());
-                                        }
                                     }
+                                    // Non-live: keep the take until the user stops.
                                 }
                                 Some("session.created") | Some("session.updated") => {}
                                 Some("error") => {
@@ -1286,15 +1264,12 @@ async fn run_mistral_realtime_inner(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn process_segment(
+async fn transcribe_vad_segment(
     samples: Vec<f32>,
     config: &Config,
     provider: SharedProvider,
-    pipe_command: Option<Vec<String>>,
     beep_player: &BeepPlayer,
-    dictation_mode: &str,
-    session_buffer: Arc<Mutex<TranscriptBuffer>>,
-) -> Result<()> {
+) -> Result<String> {
     // Process audio (trim silence, normalize)
     let processor = AudioProcessor::new(config.audio_sample_rate);
     let processed = match processor.process_for_speech_recognition(&samples) {
@@ -1324,25 +1299,35 @@ async fn process_segment(
         .transcribe_with_language(wav_data, language)
         .await
     {
-        Ok(text) => {
-            if let Err(e) = emit_finalized_segment(
-                config,
-                pipe_command,
-                &session_buffer,
-                &text,
-                dictation_mode,
-                beep_player,
-            )
-            .await
-            {
-                eprintln!("❌ Segment output failed: {e}");
-            }
-        }
+        Ok(text) => Ok(text),
         Err(e) => {
             eprintln!("❌ Transcription error: {}", e);
             beep_player.play_async(BeepType::Error).await.ok();
+            Err(anyhow!("{e}"))
         }
     }
+}
 
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use super::{push_transcript, take_plus_tail};
+
+    #[test]
+    fn push_transcript_joins_pauses_with_a_space() {
+        let mut take = String::new();
+        push_transcript(&mut take, "Tomorrow is Tuesday, right?");
+        push_transcript(&mut take, "No, wait, it's Wednesday.");
+        assert_eq!(
+            take,
+            "Tomorrow is Tuesday, right? No, wait, it's Wednesday."
+        );
+    }
+
+    #[test]
+    fn take_plus_tail_keeps_the_unfinalized_last_phrase() {
+        assert_eq!(
+            take_plus_tail("Tomorrow is Tuesday, right?", "No wait it's Wednesday"),
+            "Tomorrow is Tuesday, right? No wait it's Wednesday"
+        );
+    }
 }

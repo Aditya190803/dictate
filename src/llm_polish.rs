@@ -12,7 +12,7 @@ use std::time::Duration;
 const DEFAULT_SYSTEM: &str = r#"You receive a raw speech-to-text transcript. Output ONLY the final text to insert into the focused application.
 
 Rules:
-- Apply the speaker's latest correction when they contradict themselves (e.g. "by 130 no actually by two" → "I will reach by 2.").
+- Apply the speaker's latest correction when they contradict themselves (e.g. "Tomorrow is Tuesday, right? No, wait, it's Wednesday." → "Tomorrow is Wednesday." / "by 130 no actually by two" → "I will reach by 2.").
 - Honor spoken layout: "next line", "new paragraph", "bullet", "point one/two" become real newlines or list formatting.
 - Fix grammar, punctuation, and sentence boundaries; preserve meaning.
 - Do not add quotes, preamble, or markdown fences unless the dictation mode is markdown.
@@ -20,7 +20,7 @@ Rules:
 
 const SEGMENT_SYSTEM_SUFFIX: &str = r#"
 
-You are polishing ONE segment of ongoing dictation. Prior context was already inserted in the app; output ONLY the polished form of the new segment (not the whole document). Use prior context for terminology and continuity. Fix self-corrections within this segment only.
+You are polishing ONE take of dictation (start to stop). Prior context was already inserted in the app; output ONLY the polished form of this take, not earlier takes. Apply self-corrections and spoken formatting across the whole take.
 "#;
 
 const DEFAULT_OLLAMA_POLISH_MODEL: &str = "gemma-4";

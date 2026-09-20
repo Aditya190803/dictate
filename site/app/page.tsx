@@ -203,9 +203,10 @@ export default function Home() {
               </Table>
             </div>
             <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
-              One dictation: words appear as you speak, pauses polish the last
-              phrase, and voice edits rewrite what was just typed. Clipboard
-              commands run on the same shortcut when you copied text first.
+              One dictation: speak, stop, and the take is inserted once —
+              polished, with self-corrections and spoken formatting applied.
+              Clipboard commands run on the same shortcut when you copied text
+              first.
             </p>
           </FadeIn>
         </section>

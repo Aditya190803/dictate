@@ -34,10 +34,10 @@ Legend: **Partial** = similar idea, weaker or different UX. **Done** = shipped i
 
 | Flow | dictate |
 |------|---------|
-| Polished writing | **Done:** `[polish]` on each pause (and on one-shot clips) via OpenCode Zen / Mistral / Ollama |
+| Polished writing | **Done:** `[polish]` on the whole take when you stop, via OpenCode Zen / Mistral / Ollama |
 | **Flow Styles** | **Done:** `[polish].style` — casual, formal, concise, email, bullets |
-| **Smart formatting & backtrack** | **Partial:** cleanup + replace X with Y + voice deletes while typing; `scratch that` / `undo that` → last sentence |
-| Realtime formatting | **Partial:** words type as they arrive; polish rewrites the last phrase on pause |
+| **Smart formatting & backtrack** | **Partial:** self-corrections (`no wait, it’s Wednesday`) and spoken layout in the polish pass; `scratch that` on a take that is only that command |
+| Realtime formatting | **Done:** no live typing; insert once after polish so corrections and formatting see the full take |
 | **Context awareness** | **Partial:** `CONTEXT_EDITING` + session buffer; no app OCR |
 | IDE variable recognition | **Partial:** `--dictation-mode code-symbols` |
 | **File tagging** | — |

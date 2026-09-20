@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>dictate</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="chrome">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">›</span>
+        <h1>dictate</h1>
+      </div>
+      <p class="pulse" id="pulse">Idle</p>
+    </header>
+
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button type="button" role="tab" id="tab-listen" aria-controls="listen" aria-selected="true">
+        Listen
+      </button>
+      <button type="button" role="tab" id="tab-words" aria-controls="words" aria-selected="false">
+        Words
+      </button>
+      <button type="button" role="tab" id="tab-setup" aria-controls="setup" aria-selected="false">
+        Setup
+      </button>
+    </nav>
+
+    <p class="banner" id="banner" hidden></p>
+
+    <main>
+      <section id="listen" class="panel" role="tabpanel" aria-labelledby="tab-listen">
+        <button type="button" class="listen" id="listen-btn">
+          <span class="bars" aria-hidden="true">
+            <i style="--i: 0"></i><i style="--i: 1"></i><i style="--i: 2"></i
+            ><i style="--i: 3"></i><i style="--i: 4"></i><i style="--i: 5"></i
+            ><i style="--i: 6"></i><i style="--i: 7"></i><i style="--i: 8"></i
+            ><i style="--i: 9"></i><i style="--i: 10"></i><i style="--i: 11"></i>
+          </span>
+          <span class="listen-copy">
+            <strong id="listen-label">Listen</strong>
+            <small id="listen-hint">Same as your shortcut</small>
+          </span>
+        </button>
+
+        <div class="take" id="take">
+          <p class="eyebrow">Last take</p>
+          <p class="take-text" id="take-text">Speak, press again, text lands in the focused app.</p>
+          <div class="take-meta">
+            <span id="take-when"></span>
+            <button type="button" class="text-btn" id="copy-take" hidden>Copy</button>
+          </div>
+        </div>
+
+        <div class="history-head">
+          <p class="eyebrow">Recent</p>
+          <button type="button" class="text-btn" id="clear-history">Clear</button>
+        </div>
+        <ul class="history" id="history"></ul>
+      </section>
+
+      <section id="words" class="panel" role="tabpanel" aria-labelledby="tab-words" hidden>
+        <form id="word-form" class="word-form">
+          <p class="eyebrow" id="word-form-title">Add a name</p>
+          <label>
+            How it should be spelled
+            <input id="word-input" name="word" maxlength="60" autocomplete="off" placeholder="Hyprland" />
+          </label>
+          <label class="check">
+            <input type="checkbox" id="word-wrong-on" />
+            Fix a mishearing
+          </label>
+          <label id="word-wrong-wrap" hidden>
+            What dictate usually hears
+            <input id="word-wrong" name="wrong" maxlength="60" autocomplete="off" placeholder="hiper land" />
+          </label>
+          <div class="row-actions">
+            <button type="submit" class="solid">Save word</button>
+            <button type="button" class="ghost" id="word-cancel" hidden>Cancel</button>
+          </div>
+        </form>
+        <label class="search">
+          <span class="sr">Filter dictionary</span>
+          <input id="word-filter" type="search" placeholder="Filter" />
+        </label>
+        <ul class="words" id="word-list"></ul>
+      </section>
+
+      <section id="setup" class="panel" role="tabpanel" aria-labelledby="tab-setup" hidden>
+        <p class="eyebrow">Binary</p>
+        <p class="path" id="binary-path">Looking for dictate…</p>
+        <div class="row-actions">
+          <button type="button" class="ghost" id="pick-binary">Locate binary</button>
+          <button type="button" class="ghost" id="open-config">Open config folder</button>
+        </div>
+
+        <form id="setup-form" class="setup-form">
+          <p class="eyebrow">Speech</p>
+          <label>
+            Engine
+            <select name="TRANSCRIPTION_PROVIDER">
+              <option value="mistral">Mistral</option>
+              <option value="groq">Groq</option>
+              <option value="deepgram">Deepgram</option>
+              <option value="local">Local Whisper</option>
+            </select>
+          </label>
+          <label data-key="MISTRAL_API_KEY">
+            Mistral API key
+            <input name="MISTRAL_API_KEY" type="password" autocomplete="off" spellcheck="false" />
+          </label>
+          <label data-key="GROQ_API_KEY" hidden>
+            Groq API key
+            <input name="GROQ_API_KEY" type="password" autocomplete="off" spellcheck="false" />
+          </label>
+          <label data-key="DEEPGRAM_API_KEY" hidden>
+            Deepgram API key
+            <input name="DEEPGRAM_API_KEY" type="password" autocomplete="off" spellcheck="false" />
+          </label>
+          <label>
+            Language
+            <input name="TRANSCRIPTION_LANGUAGE" placeholder="auto" />
+          </label>
+
+          <p class="eyebrow">Insert</p>
+          <label>
+            Output
+            <select name="SHORTCUT_OUTPUT">
+              <option value="type">Type into focused app</option>
+              <option value="paste">Paste (clipboard + Ctrl+V)</option>
+              <option value="clipboard">Clipboard only</option>
+              <option value="stdout">Stdout</option>
+            </select>
+          </label>
+          <label>
+            Shortcut
+            <input name="SHORTCUT_KEY_LIVE" placeholder="CTRL,ALT,R" />
+          </label>
+          <label>
+            Profile
+            <select name="DICTATE_PROFILE">
+              <option value="segmented">Speak, stop, insert</option>
+              <option value="command">Voice command on clipboard</option>
+              <option value="batch_clip">Batch clip, local cleanup</option>
+            </select>
+          </label>
+          <label>
+            Beeps
+            <select name="ENABLE_AUDIO_FEEDBACK">
+              <option value="true">On</option>
+              <option value="false">Off</option>
+            </select>
+          </label>
+          <label>
+            Beep volume
+            <input name="BEEP_VOLUME" inputmode="decimal" placeholder="0.1" />
+          </label>
+
+          <p class="eyebrow">Polish</p>
+          <label>
+            Provider
+            <select name="POLISH_PROVIDER">
+              <option value="auto">Auto</option>
+              <option value="opencode">OpenCode Zen</option>
+              <option value="mistral">Mistral</option>
+              <option value="ollama">Ollama</option>
+            </select>
+          </label>
+          <label>
+            OpenCode API key
+            <input name="OPENCODE_API_KEY" type="password" autocomplete="off" spellcheck="false" />
+          </label>
+          <label>
+            Polish on
+            <select id="polish-enabled">
+              <option value="true">On</option>
+              <option value="false">Off</option>
+            </select>
+          </label>
+          <label>
+            Style
+            <select id="polish-style">
+              <option value="">Default</option>
+              <option value="casual">Casual</option>
+              <option value="formal">Formal</option>
+              <option value="concise">Concise</option>
+              <option value="email">Email</option>
+              <option value="bullets">Bullets</option>
+            </select>
+          </label>
+        </form>
+
+        <p class="eyebrow">Login</p>
+        <div class="row-actions">
+          <button type="button" class="ghost" id="autostart-on">Install autostart</button>
+          <button type="button" class="ghost" id="autostart-off">Remove autostart</button>
+        </div>
+
+        <div class="doctor-head">
+          <p class="eyebrow">Doctor</p>
+          <button type="button" class="text-btn" id="run-doctor">Run checks</button>
+        </div>
+        <ul class="doctor" id="doctor"></ul>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

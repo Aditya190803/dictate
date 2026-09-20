@@ -26,7 +26,7 @@ const DESCRIPTION =
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://dictate.adityamer.dev"),
-  title: "dictate — speech to text for Linux and Windows",
+  title: "dictate",
   description: DESCRIPTION,
   keywords: [
     "speech-to-text", "dictation", "voice typing", "wayland", "linux",
@@ -34,7 +34,7 @@ export const metadata: Metadata = {
   ],
   authors: [{ name: "Aditya Mer" }],
   openGraph: {
-    title: "dictate — speech to text for Linux and Windows",
+    title: "dictate",
     description: DESCRIPTION,
     type: "website",
     url: "https://dictate.adityamer.dev",
@@ -42,7 +42,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "dictate — speech to text for Linux and Windows",
+    title: "dictate",
     description: DESCRIPTION,
   },
 };

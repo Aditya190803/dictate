@@ -3,9 +3,11 @@ use crate::audio_processing::AudioProcessor;
 use crate::beep::{BeepConfig, BeepPlayer, BeepType};
 use crate::command;
 use crate::config::Config;
-use crate::segment_output::emit_finalized_segment;
+use crate::context_session::handle_live_delta;
+use crate::segment_output::{emit_finalized_segment, finalize_live_utterance};
 use crate::transcript::TranscriptBuffer;
 use crate::transcription::{SharedProvider, TranscriptionFactory};
+use crate::typing::OutputBackend;
 use crate::wav::WavEncoder;
 use anyhow::{anyhow, Result};
 use base64::Engine;
@@ -408,13 +410,9 @@ async fn run_deepgram_realtime_inner(
         .clone()
         .ok_or_else(|| anyhow!("DEEPGRAM_API_KEY is required for Deepgram realtime STT"))?;
 
-    let type_deltas = config.profile == crate::profile::DictateProfile::LiveTyping;
+    let type_deltas = config.profile.types_live_deltas();
 
-    if config.profile.uses_segment_polish() {
-        eprintln!("🎙️  dictate — polished segments (Deepgram realtime)");
-    } else {
-        eprintln!("🎙️  dictate realtime mode — Deepgram WebSocket STT");
-    }
+    eprintln!("🎙️  dictate — Deepgram realtime");
     eprintln!("   Model: {}", config.deepgram_model);
     if active_on_start {
         eprintln!("   {} to stop", crate::control::TOGGLE_HINT);
@@ -747,7 +745,23 @@ async fn emit_preview_flush(
     dictation_mode: String,
     beep_player: &BeepPlayer,
     type_deltas: bool,
+    utterance_start: &mut usize,
 ) {
+    if type_deltas {
+        if let Err(e) = finalize_live_utterance(
+            config,
+            pipe_owned,
+            &session_buffer,
+            utterance_start,
+            &dictation_mode,
+            beep_player,
+        )
+        .await
+        {
+            eprintln!("❌ Live output failed: {e}");
+        }
+        return;
+    }
     if text.trim().is_empty() {
         return;
     }
@@ -764,9 +778,6 @@ async fn emit_preview_flush(
         {
             eprintln!("❌ Segment output failed: {e}");
         }
-    } else if type_deltas {
-        let text = crate::text_processing::process_text(&text, &config.text_processing);
-        emit_text(&text, pipe_owned.as_ref()).await;
     } else {
         eprintln!("\n📝 {}", text.trim());
     }
@@ -806,6 +817,25 @@ async fn handle_realtime_segment(
         emit_text(&segment, pipe_owned).await;
     } else {
         eprintln!("\n📝 {segment}");
+    }
+}
+
+async fn emit_live_delta(
+    text: &str,
+    config: &Config,
+    pipe_command: Option<&Vec<String>>,
+    session_buffer: &Arc<Mutex<TranscriptBuffer>>,
+    utterance_start: &mut usize,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let backend = OutputBackend::new(pipe_command.cloned());
+    let mut buffer = session_buffer.lock().await;
+    match handle_live_delta(&backend, &mut buffer, config, text).await {
+        Ok(true) => *utterance_start = buffer.text().len(),
+        Ok(false) => {}
+        Err(e) => eprintln!("❌ Live output failed: {e}"),
     }
 }
 
@@ -875,13 +905,9 @@ async fn run_mistral_realtime_inner(
         .clone()
         .ok_or_else(|| anyhow!("MISTRAL_API_KEY is required for Mistral realtime STT"))?;
 
-    let type_deltas = config.profile == crate::profile::DictateProfile::LiveTyping;
+    let type_deltas = config.profile.types_live_deltas();
 
-    if config.profile.uses_segment_polish() {
-        eprintln!("🎙️  dictate — polished segments (Mistral realtime)");
-    } else {
-        eprintln!("🎙️  dictate realtime mode — Mistral WebSocket STT");
-    }
+    eprintln!("🎙️  dictate — type as you speak, polish on pause");
     eprintln!("   Model: {}", config.mistral_realtime_model);
     if active_on_start {
         eprintln!("   {} to stop", crate::control::TOGGLE_HINT);
@@ -965,6 +991,7 @@ async fn run_mistral_realtime_inner(
     let dictation_mode = dictation_mode.to_string();
     let config = config.clone();
     let mut preview_tail = String::new();
+    let mut utterance_start = 0usize;
     let mut audio_send_ready = true;
     let mut drain_flush_until: Option<Instant> = None;
     let mut first_audio_logged = false;
@@ -978,7 +1005,7 @@ async fn run_mistral_realtime_inner(
             if Instant::now() >= until {
                 drain_flush_until = None;
                 let text = std::mem::take(&mut preview_tail);
-                if !text.trim().is_empty() {
+                if type_deltas || !text.trim().is_empty() {
                     emit_preview_flush(
                         text,
                         &config,
@@ -987,6 +1014,7 @@ async fn run_mistral_realtime_inner(
                         dictation_mode.clone(),
                         &beep_player,
                         type_deltas,
+                        &mut utterance_start,
                     )
                     .await;
                 }
@@ -1016,7 +1044,7 @@ async fn run_mistral_realtime_inner(
                 if !active_on_start && audio_rx.is_none() {
                     if drain_flush_until.take().is_some() {
                         let pending = std::mem::take(&mut preview_tail);
-                        if !pending.trim().is_empty() {
+                        if type_deltas || !pending.trim().is_empty() {
                             emit_preview_flush(
                                 pending,
                                 &config,
@@ -1025,6 +1053,7 @@ async fn run_mistral_realtime_inner(
                                 dictation_mode.clone(),
                                 &beep_player,
                                 type_deltas,
+                                &mut utterance_start,
                             )
                             .await;
                         }
@@ -1032,6 +1061,7 @@ async fn run_mistral_realtime_inner(
                         preview_tail.clear();
                     }
                     session_buffer.lock().await.clear();
+                    utterance_start = 0;
                     eprintln!("\n▶️  Dictation started");
                     audio_rx = Some(recorder.start_continuous()?);
                     capture_rate = recorder.capture_sample_rate();
@@ -1046,7 +1076,7 @@ async fn run_mistral_realtime_inner(
                 if active {
                     if drain_flush_until.take().is_some() {
                         let pending = std::mem::take(&mut preview_tail);
-                        if !pending.trim().is_empty() {
+                        if type_deltas || !pending.trim().is_empty() {
                             emit_preview_flush(
                                 pending,
                                 &config,
@@ -1055,6 +1085,7 @@ async fn run_mistral_realtime_inner(
                                 dictation_mode.clone(),
                                 &beep_player,
                                 type_deltas,
+                                &mut utterance_start,
                             )
                             .await;
                         }
@@ -1062,6 +1093,7 @@ async fn run_mistral_realtime_inner(
                         preview_tail.clear();
                     }
                     session_buffer.lock().await.clear();
+                    utterance_start = 0;
                     eprintln!("\n▶️  Dictation started");
                     audio_rx = Some(recorder.start_continuous()?);
                     capture_rate = recorder.capture_sample_rate();
@@ -1097,15 +1129,33 @@ async fn run_mistral_realtime_inner(
                                                 delta,
                                                 &config.text_processing,
                                             );
-                                            emit_text(&delta, pipe_owned.as_ref()).await;
+                                            emit_live_delta(
+                                                &delta,
+                                                &config,
+                                                pipe_owned.as_ref(),
+                                                &session_buffer,
+                                                &mut utterance_start,
+                                            )
+                                            .await;
                                         } else if config.profile.uses_segment_polish() {
                                             preview_tail.push_str(delta);
                                         }
                                     }
                                 }
                                 Some("transcription.segment") => {
-                                    // Live typing already emitted via text.delta; segment is duplicate.
                                     if type_deltas {
+                                        if let Err(e) = finalize_live_utterance(
+                                            &config,
+                                            pipe_owned.clone(),
+                                            &session_buffer,
+                                            &mut utterance_start,
+                                            &dictation_mode,
+                                            &beep_player,
+                                        )
+                                        .await
+                                        {
+                                            eprintln!("❌ Live output failed: {e}");
+                                        }
                                         preview_tail.clear();
                                         continue;
                                     }
@@ -1126,7 +1176,20 @@ async fn run_mistral_realtime_inner(
                                     }
                                 }
                                 Some("transcription.done") => {
-                                    if !preview_tail.trim().is_empty() {
+                                    if type_deltas {
+                                        if let Err(e) = finalize_live_utterance(
+                                            &config,
+                                            pipe_owned.clone(),
+                                            &session_buffer,
+                                            &mut utterance_start,
+                                            &dictation_mode,
+                                            &beep_player,
+                                        )
+                                        .await
+                                        {
+                                            eprintln!("❌ Live output failed: {e}");
+                                        }
+                                    } else if !preview_tail.trim().is_empty() {
                                         let tail = std::mem::take(&mut preview_tail);
                                         if config.profile.uses_segment_polish() {
                                             if let Err(e) = emit_finalized_segment(
@@ -1141,12 +1204,6 @@ async fn run_mistral_realtime_inner(
                                             {
                                                 eprintln!("❌ Segment output failed: {e}");
                                             }
-                                        } else if type_deltas {
-                                            let tail = crate::text_processing::process_text(
-                                                &tail,
-                                                &config.text_processing,
-                                            );
-                                            emit_text(&tail, pipe_owned.as_ref()).await;
                                         } else {
                                             eprintln!("\n📝 {}", tail.trim());
                                         }

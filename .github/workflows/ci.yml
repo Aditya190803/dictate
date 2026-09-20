@@ -102,6 +102,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
       # No deny.toml / audit config stub: rustsec/audit-check needs no local
       # config (it checks Cargo.lock against the RustSec advisory DB fetched
       # at runtime). A license lint (cargo-deny) is intentionally deferred

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Prior typed text included in per-segment LLM polish prompts.
 pub const POLISH_CONTEXT_CHARS: usize = 2000;
 
-/// Legacy CLI `--mode` aliases (default install uses segmented only).
+/// Legacy CLI `--mode` aliases. Both map to the same dictation product.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DictateMode {
     #[default]
@@ -23,10 +23,7 @@ impl DictateMode {
     }
 
     pub fn profile(self) -> DictateProfile {
-        match self {
-            Self::Live => DictateProfile::LiveTyping,
-            Self::Smart => DictateProfile::SmartPaste,
-        }
+        DictateProfile::Segmented
     }
 }
 
@@ -34,12 +31,12 @@ impl DictateMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DictateProfile {
-    /// Default: pause-bound segments, session context, per-segment polish (realtime WebSocket or VAD).
+    /// Default product: type as you speak, voice corrections, polish on pause.
     #[default]
     Segmented,
-    /// Legacy: raw Mistral realtime deltas.
+    /// Alias of [`Self::Segmented`] (kept so old configs deserialize).
     LiveTyping,
-    /// Legacy: record until stop, one polished paste.
+    /// Alias of [`Self::Segmented`] (kept so old configs deserialize).
     SmartPaste,
     /// Whole-clip batch STT, local text processing only, paste once.
     BatchClip,
@@ -50,9 +47,8 @@ pub enum DictateProfile {
 impl DictateProfile {
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().replace('-', "_").as_str() {
-            "segmented" | "default" | "dictate" => Some(Self::Segmented),
-            "live_typing" | "live" | "realtime" | "stream" => Some(Self::LiveTyping),
-            "smart_paste" | "smart" | "polish" | "polished" => Some(Self::SmartPaste),
+            "segmented" | "default" | "dictate" | "live_typing" | "live" | "realtime"
+            | "stream" | "smart_paste" | "smart" | "polish" | "polished" => Some(Self::Segmented),
             "batch_clip" | "batch" | "clip" => Some(Self::BatchClip),
             "command" | "command_mode" => Some(Self::Command),
             _ => None,
@@ -61,9 +57,7 @@ impl DictateProfile {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Segmented => "segmented",
-            Self::LiveTyping => "live_typing",
-            Self::SmartPaste => "smart_paste",
+            Self::Segmented | Self::LiveTyping | Self::SmartPaste => "segmented",
             Self::BatchClip => "batch_clip",
             Self::Command => "command",
         }
@@ -71,9 +65,7 @@ impl DictateProfile {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Segmented => "Dictation",
-            Self::LiveTyping => "Live typing",
-            Self::SmartPaste => "Smart paste",
+            Self::Segmented | Self::LiveTyping | Self::SmartPaste => "Dictation",
             Self::BatchClip => "Batch clip",
             Self::Command => "Command",
         }
@@ -81,11 +73,9 @@ impl DictateProfile {
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Segmented => {
-                "Speak in phrases; polished text inserts after each pause with voice corrections."
+            Self::Segmented | Self::LiveTyping | Self::SmartPaste => {
+                "Words appear as you speak; pauses polish the last phrase; say scratch that to edit."
             }
-            Self::LiveTyping => "Words appear as you speak (Mistral or Deepgram realtime).",
-            Self::SmartPaste => "Speak, stop, get polished text pasted once (daemon).",
             Self::BatchClip => "Record, stop, transcribe once with local cleanup only.",
             Self::Command => "Speak an instruction; applies to clipboard text (e.g. fix grammar).",
         }
@@ -111,27 +101,31 @@ impl DictateProfile {
 
     /// Apply profile to legacy STT flags (for code paths that still read batch_mode).
     pub fn implies_batch_stt(self) -> bool {
-        match self {
-            Self::SmartPaste | Self::BatchClip | Self::Command => true,
-            Self::Segmented | Self::LiveTyping => false,
-        }
+        matches!(self, Self::BatchClip | Self::Command)
     }
 
     pub fn wants_daemon(self) -> bool {
-        match self {
-            Self::Segmented | Self::LiveTyping | Self::SmartPaste | Self::Command => true,
-            Self::BatchClip => false,
-        }
+        !matches!(self, Self::BatchClip)
     }
 
-    /// Whole-clip polish (smart_paste one-shot).
+    /// Free dictation (type + voice edits + polish), not clipboard-command or batch-only.
+    pub fn is_dictation(self) -> bool {
+        matches!(self, Self::Segmented | Self::LiveTyping | Self::SmartPaste)
+    }
+
+    /// Whole-clip polish (one-shot / groq-local clip path).
     pub fn uses_llm_polish(self) -> bool {
-        self == Self::SmartPaste
+        self.is_dictation()
     }
 
-    /// Per-utterance polish + session buffer (default product behavior).
+    /// Per-utterance polish + session buffer.
     pub fn uses_segment_polish(self) -> bool {
-        self == Self::Segmented
+        self.is_dictation()
+    }
+
+    /// Word-by-word typing when the STT provider streams deltas (Mistral).
+    pub fn types_live_deltas(self) -> bool {
+        self.is_dictation()
     }
 
     pub fn is_command_mode(self) -> bool {
@@ -147,11 +141,11 @@ mod tests {
     fn parse_aliases() {
         assert_eq!(
             DictateProfile::parse("live_typing"),
-            Some(DictateProfile::LiveTyping)
+            Some(DictateProfile::Segmented)
         );
         assert_eq!(
             DictateProfile::parse("smart-paste"),
-            Some(DictateProfile::SmartPaste)
+            Some(DictateProfile::Segmented)
         );
         assert_eq!(
             DictateProfile::parse("batch"),
@@ -177,8 +171,12 @@ mod tests {
 
     #[test]
     fn polish_flags_by_profile() {
-        assert!(DictateProfile::SmartPaste.uses_llm_polish());
+        assert!(DictateProfile::Segmented.uses_llm_polish());
         assert!(DictateProfile::Segmented.uses_segment_polish());
-        assert!(!DictateProfile::LiveTyping.uses_llm_polish());
+        assert!(DictateProfile::Segmented.types_live_deltas());
+        assert!(!DictateProfile::BatchClip.uses_llm_polish());
+        assert!(!DictateProfile::Command.types_live_deltas());
+        assert_eq!(DictateMode::Live.profile(), DictateProfile::Segmented);
+        assert_eq!(DictateMode::Smart.profile(), DictateProfile::Segmented);
     }
 }

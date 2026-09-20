@@ -7,7 +7,6 @@ use crate::command_mode;
 use crate::config::Config;
 use crate::developer_modes::apply_developer_mode;
 use crate::llm_polish::{handle_polish_failure, polish_transcript};
-use crate::profile::DictateProfile;
 use crate::text_processing::process_text;
 use crate::transcription::{SharedProvider, TranscriptionError, TranscriptionFactory};
 use crate::wav::WavEncoder;
@@ -54,7 +53,7 @@ pub async fn finalize_transcribed_text(
     let local = process_text(text, &config.text_processing);
     let local = apply_developer_mode(&local, dictation_mode);
 
-    if config.profile != DictateProfile::SmartPaste {
+    if !config.profile.uses_llm_polish() {
         return Ok(local);
     }
 
@@ -224,7 +223,7 @@ pub async fn run_clip_transcription(
                     }
                 };
 
-            if processed_text.is_empty() && req.config.profile == DictateProfile::SmartPaste {
+            if processed_text.is_empty() && req.config.profile.uses_llm_polish() {
                 req.beep_player.play_async(BeepType::Error).await.ok();
                 return Ok(1);
             }

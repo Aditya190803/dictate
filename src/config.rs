@@ -65,8 +65,8 @@ pub struct Config {
     /// Saved for shortcut generation / install.sh (not used at runtime except default_pipe_to).
     pub shortcut_key: Option<String>,
     pub shortcut_key_live: Option<String>,
-    /// Legacy second shortcut; default install uses `shortcut_key` only.
-    #[allow(dead_code)]
+    /// Legacy second shortcut; read by `config_cli` doctor/get and written by
+    /// the wizard, so not dead.
     pub shortcut_key_smart: Option<String>,
     pub shortcut_desktop: Option<String>,
     /// Voice corrections on typed/pasted session text (smart path, VAD segments).
@@ -155,11 +155,18 @@ impl Config {
         }
 
         /// Helper: read an env var and parse into a numeric type with fallback.
-        fn env_parse_or<T: std::str::FromStr>(name: &str, default: T) -> T {
-            std::env::var(name)
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(default)
+        /// Warns on parse failure so typos don't silently become defaults.
+        fn env_parse_or<T: std::str::FromStr + std::fmt::Display>(name: &str, default: T) -> T {
+            match std::env::var(name) {
+                Ok(raw) => match raw.parse() {
+                    Ok(v) => v,
+                    Err(_) => {
+                        log::warn!("invalid value for {name}: {raw:?}; using default {default}");
+                        default
+                    }
+                },
+                Err(_) => default,
+            }
         }
 
         /// Helper: read an env var as a boolean (true/1/yes/on).
@@ -244,7 +251,6 @@ impl Config {
     }
 
     /// Mistral LLM for unrecognized `--command` voice instructions (text.toml).
-    #[cfg_attr(test, allow(dead_code))]
     pub fn command_mode_uses_llm(&self) -> bool {
         self.text_processing.command_mode.use_llm && self.polish_available()
     }

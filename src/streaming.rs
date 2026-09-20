@@ -27,6 +27,14 @@ const MAX_SPEECH_MS: usize = 15000; // max 15s segment (force split)
 const RING_FRAMES: usize = 20; // 600ms lookback ring buffer
 const SEGMENT_QUEUE_CAPACITY: usize = 8;
 
+/// Steady-state WebSocket read deadline: if no frame arrives within this long
+/// the socket is stalled (dead peer, NAT timeout) and transcripts stop flowing.
+/// Currently only logged — the loops below `break` on close/error but do not
+/// reconnect yet.
+/// TODO(reconnect): add bounded reconnect with backoff + session re-handshake
+/// (Mistral) / fresh `connect_async` (Deepgram) instead of just warning here.
+const WS_READ_STALL_TIMEOUT: Duration = Duration::from_secs(45);
+
 /// Voice Activity Detection segmenter
 pub struct VADSegmenter {
     processor: AudioProcessor,
@@ -310,7 +318,9 @@ fn mistral_realtime_url(config: &Config) -> String {
 
     format!(
         "{}/v1/audio/transcriptions/realtime?model={}&target_streaming_delay_ms={}",
-        base, config.mistral_realtime_model, config.mistral_realtime_delay_ms
+        base,
+        crate::transcription::encode_model(&config.mistral_realtime_model),
+        config.mistral_realtime_delay_ms
     )
 }
 
@@ -337,14 +347,15 @@ fn deepgram_realtime_url(config: &Config) -> String {
     let mut url = format!(
         "{}/v1/listen?model={}&encoding=linear16&sample_rate=16000&channels=1\
          &smart_format=true&interim_results=false&endpointing=300",
-        base, config.deepgram_model
+        base,
+        crate::transcription::encode_model(&config.deepgram_model)
     );
     // `auto` is dictate's sentinel, not a Deepgram code — omitting it lets the
-    // model use its own default rather than being rejected.
-    let lang = config.transcription_language.trim();
-    if !lang.is_empty() && !lang.eq_ignore_ascii_case("auto") {
+    // model use its own default rather than being rejected. Invalid codes fall
+    // back to auto (omit) with a warning.
+    if let Some(lang) = crate::transcription::sanitize_language(&config.transcription_language) {
         url.push_str("&language=");
-        url.push_str(lang);
+        url.push_str(&lang);
     }
     url
 }
@@ -471,6 +482,7 @@ async fn run_deepgram_realtime_inner(
     let config = config.clone();
     let mut preview_tail = String::new();
     let mut last_audio_time = Instant::now();
+    let mut last_ws_msg = Instant::now();
     let mut first_audio_logged = false;
     // Deepgram closes an idle socket after ~10s of silence; KeepAlive holds a
     // warm daemon's connection open between dictations.
@@ -553,6 +565,7 @@ async fn run_deepgram_realtime_inner(
                 }
             }
             maybe_msg = ws_read.next() => {
+                last_ws_msg = Instant::now();
                 match maybe_msg {
                     Some(Ok(Message::Text(text))) => {
                         let value: serde_json::Value = match serde_json::from_str(&text) {
@@ -605,6 +618,10 @@ async fn run_deepgram_realtime_inner(
                 }
             }
             _ = keepalive.tick() => {
+                if last_ws_msg.elapsed() > WS_READ_STALL_TIMEOUT {
+                    eprintln!("⚠️  No WebSocket frames for {}s — connection may be stalled (TODO: reconnect)", WS_READ_STALL_TIMEOUT.as_secs());
+                    last_ws_msg = Instant::now();
+                }
                 if audio_rx.is_none() || last_audio_time.elapsed() > Duration::from_secs(8) {
                     ws_write
                         .send(Message::Text(
@@ -939,6 +956,7 @@ async fn run_mistral_realtime_inner(
     }
 
     let mut last_audio_time = Instant::now();
+    let mut last_ws_msg = Instant::now();
     let mut active = active_on_start;
     let mut silent_interval = tokio::time::interval(Duration::from_secs(30));
     silent_interval.tick().await;
@@ -1065,6 +1083,7 @@ async fn run_mistral_realtime_inner(
                 }
             }
             maybe_msg = ws_read.next() => {
+                last_ws_msg = Instant::now();
                 match maybe_msg {
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -1193,6 +1212,10 @@ async fn run_mistral_realtime_inner(
                 }
             }
             _ = silent_interval.tick() => {
+                if last_ws_msg.elapsed() > WS_READ_STALL_TIMEOUT {
+                    eprintln!("⚠️  No WebSocket frames for {}s — connection may be stalled (TODO: reconnect)", WS_READ_STALL_TIMEOUT.as_secs());
+                    last_ws_msg = Instant::now();
+                }
                 if last_audio_time.elapsed() > Duration::from_secs(30) {
                     eprintln!("⚠️  No audio detected for 30s — mic may be muted or disconnected");
                     last_audio_time = Instant::now();

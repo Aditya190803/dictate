@@ -234,11 +234,41 @@ async fn run_polish_chat(
 
         match result {
             Ok(content) => return Ok(strip_wrapping_quotes(&content)),
-            Err(e) => last_err = Some(e),
+            Err(e) => {
+                // Mirror batch STT (`transcription::online`): auth / client
+                // errors are permanent — retrying a 401/400 just burns latency.
+                if is_non_retryable_polish_error(&e) {
+                    return Err(e);
+                }
+                last_err = Some(e);
+            }
         }
     }
 
     Err(last_err.unwrap_or_else(|| anyhow!("Polish failed")))
+}
+
+/// Permanent client-side failures that a retry cannot fix (mirrors the
+/// `AuthenticationFailed` early-exit in `transcription::online`). Covers
+/// missing-key config errors plus HTTP 400-class responses (bad key, unknown
+/// model, malformed request). Transient 5xx / network errors still retry with
+/// linear backoff in `run_polish_chat`.
+fn is_non_retryable_polish_error(e: &anyhow::Error) -> bool {
+    let msg = e.to_string();
+    if msg.contains("AuthenticationFailed")
+        || msg.contains("required for polish")
+        || msg.contains("is missing")
+    {
+        return true;
+    }
+    // Match `HTTP 400`, `HTTP 401`, ... but not `HTTP 500`.
+    if let Some(idx) = msg.find("HTTP 4") {
+        let rest = &msg[idx + "HTTP ".len()..];
+        if rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+    false
 }
 
 fn polish_unavailable_error(config: &Config) -> anyhow::Error {

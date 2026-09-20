@@ -54,40 +54,48 @@ pub async fn execute_with_input(command_args: &[String], input: &str) -> Result<
     debug!("Executing command: {} {:?}", command_name, args);
     debug!("Input length: {} characters", input.len());
 
-    let mut child = Command::new(command_name)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| anyhow!("Failed to execute command '{}': {}", command_name, e))?;
+    // Mirror `execute_capture`: bound the whole stdin-pipe + wait sequence so a
+    // hung consumer (e.g. a pager waiting on a tty) cannot block dictation.
+    let work = async {
+        let mut child = Command::new(command_name)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| anyhow!("Failed to execute command '{}': {}", command_name, e))?;
 
-    // Get stdin handle and write input
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(input.as_bytes())
+        // Get stdin handle and write input
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(input.as_bytes())
+                .await
+                .map_err(|e| anyhow!("Failed to write to command stdin: {}", e))?;
+
+            // Close stdin to signal EOF
+            stdin
+                .shutdown()
+                .await
+                .map_err(|e| anyhow!("Failed to close stdin: {}", e))?;
+        } else {
+            return Err(anyhow!("Failed to get stdin handle for command"));
+        }
+
+        // Wait for the command to complete
+        let output = child
+            .wait()
             .await
-            .map_err(|e| anyhow!("Failed to write to command stdin: {}", e))?;
+            .map_err(|e| anyhow!("Failed to wait for command completion: {}", e))?;
 
-        // Close stdin to signal EOF
-        stdin
-            .shutdown()
-            .await
-            .map_err(|e| anyhow!("Failed to close stdin: {}", e))?;
-    } else {
-        return Err(anyhow!("Failed to get stdin handle for command"));
-    }
+        let exit_code = output.code().unwrap_or(-1);
+        debug!("Command completed with exit code: {}", exit_code);
 
-    // Wait for the command to complete
-    let output = child
-        .wait()
+        Ok(exit_code)
+    };
+
+    tokio::time::timeout(Duration::from_secs(30), work)
         .await
-        .map_err(|e| anyhow!("Failed to wait for command completion: {}", e))?;
-
-    let exit_code = output.code().unwrap_or(-1);
-    debug!("Command completed with exit code: {}", exit_code);
-
-    Ok(exit_code)
+        .map_err(|_| anyhow!("Command '{}' timed out after 30s", command_name))?
 }
 
 #[cfg(test)]

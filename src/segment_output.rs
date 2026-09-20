@@ -131,10 +131,7 @@ pub async fn finalize_live_utterance(
         return Ok(());
     }
 
-    if !matches!(
-        detect_intent(typed.trim()),
-        DictationIntent::InsertText(_)
-    ) {
+    if !matches!(detect_intent(typed.trim()), DictationIntent::InsertText(_)) {
         *utterance_start = buffer.text().len();
         return Ok(());
     }

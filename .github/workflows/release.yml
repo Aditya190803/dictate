@@ -1,0 +1,108 @@
+name: Release
+
+# Builds default-feature release binaries on tag push and attaches them to a
+# GitHub Release. Every previous release was cut by hand; this is the first
+# automated path.
+#
+# Asset names match what the installers fetch:
+#   install.sh  -> https://github.com/Aditya190803/dictate/releases/latest/download/dictate-linux-x86_64
+#   install.ps1 -> https://github.com/Aditya190803/dictate/releases/latest/download/dictate-windows-x86_64.exe
+#
+# Linux builds on ubuntu-22.04 (glibc 2.35) rather than ubuntu-latest so the
+# binary keeps working on older distros. words-ui/local features are not in
+# release binaries — installers offer them via source builds (DICTATE_BUILD_FEATURES).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux (x86_64)
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: dictate-linux-x86_64
+          - name: Windows (msvc)
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: dictate-windows-x86_64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Toolchain pinned in rust-toolchain.toml; @master follows it (same as
+      # ci.yml). The base target runs without extra toolchain input.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # cpal -> alsa-sys needs the ALSA dev headers on Linux; Windows needs
+      # no system packages (WASAPI + SChannel).
+      - name: Install system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Stage asset
+        shell: bash
+        run: cp "target/${{ matrix.target }}/release/dictate" "${{ matrix.asset }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*
+          fail_on_unmatched_files: true
+          body: |
+            ## Highlights since v1.1.0
+
+            - **Native Windows support** — in-process `SendInput` typing, Win32 clipboard/paste, `RegisterHotKey` agent, autostart, named-pipe daemon control (`docs/windows.md`)
+            - **Deepgram STT provider** with realtime WebSocket path
+            - **One-command PowerShell installer** (`irm https://dictate.adityamer.dev/install.ps1 | iex`)
+            - **Security hardening** — private file permissions (0o600 secrets), URL/query parameter sanitation, `$EDITOR` argv splitting
+            - **Reliability** — 30s timeouts on typing/model-download paths, no retries on auth failures, WebSocket stall detection, log-based diagnostics
+            - **DevX** — MSRV 1.82 pinned, `rust-toolchain.toml`, shared pure modules exported via lib, cargo audit in CI
+
+            Existing installers upgrade via `/releases/latest/download`:
+            ```bash
+            wget https://github.com/Aditya190803/dictate/releases/latest/download/dictate-linux-x86_64
+            chmod +x dictate-linux-x86_64 && mv dictate-linux-x86_64 ~/.local/bin/dictate
+            ```

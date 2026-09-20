@@ -20,20 +20,22 @@ mod config;
 mod config_cli;
 mod context_session;
 mod control;
-mod developer_modes;
+// Shared pure modules live in the library; reuse them so `crate::X` paths in
+// binary modules keep resolving to a single implementation.
+use dictate::developer_modes;
+use dictate::intent;
+use dictate::polish_styles;
+use dictate::transcript;
 mod editing;
 mod history;
-mod intent;
 mod llm_polish;
 mod platform;
-mod polish_styles;
 mod profile;
 mod scratchpad;
 mod segment_output;
 mod setup_tui;
 mod streaming;
 mod text_processing;
-mod transcript;
 mod transcription;
 mod typing;
 mod update;
@@ -197,6 +199,13 @@ fn load_config_for_doctor(envfile: &PathBuf) -> Result<Config> {
 
 // ─── Model download ──────────────────────────────────────────────────────────
 
+/// Download a whisper.cpp model from Hugging Face into [`Config::model_dir`].
+///
+/// Expected behavior: bounded by a 30s connect + 30s total reqwest timeout so a
+/// stalled mirror fails instead of hanging; streams to `<model>.download` and
+/// atomically renames to `<model>` on success, so a crash never leaves a
+/// half-written model at the final path (a stale `.download` file is resumed
+/// over / truncated on the next run).
 async fn download_model(model: &str) -> Result<PathBuf> {
     let base_url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
     let url = format!("{base_url}/{model}");
@@ -205,7 +214,12 @@ async fn download_model(model: &str) -> Result<PathBuf> {
     let path = dir.join(model);
     let temp_path = dir.join(format!("{model}.download"));
 
-    let resp = reqwest::get(&url).await.map_err(|e| anyhow!("{e}"))?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| anyhow!("{e}"))?;
+    let resp = client.get(&url).send().await.map_err(|e| anyhow!("{e}"))?;
     if !resp.status().is_success() {
         return Err(anyhow!("Failed to download model: {}", resp.status()));
     }
@@ -249,7 +263,13 @@ async fn download_model(model: &str) -> Result<PathBuf> {
 
     file.flush().await?;
     tokio::fs::rename(&temp_path, &path).await?;
-    info!("Model downloaded to {}", path.display());
+    // TODO: no checksum infra yet — verify size/hash against the Hub once
+    // expected digests are plumbed through (see whisper.cpp release notes).
+    info!(
+        "Model downloaded to {} ({} bytes)",
+        path.display(),
+        downloaded
+    );
     Ok(path)
 }
 
@@ -552,15 +572,26 @@ async fn main() -> Result<()> {
                 #[cfg(not(feature = "words-ui"))]
                 {
                     if let Some(parent) = text_path.parent() {
-                        std::fs::create_dir_all(parent)?;
+                        config_cli::ensure_private_dir(parent)?;
                     }
                     if !text_path.exists() {
-                        std::fs::write(&text_path, "preferred_words = []\n\n[dictionary]\n")?;
+                        config_cli::write_private_file(
+                            &text_path,
+                            b"preferred_words = []\n\n[dictionary]\n",
+                        )?;
+                    } else {
+                        config_cli::restrict_perms(&text_path);
                     }
                     let editor = platform::default_editor();
-                    let status = std::process::Command::new(&editor)
+                    #[cfg(windows)]
+                    let (program, args) = config_cli::editor_argv(&editor, "notepad");
+                    #[cfg(not(windows))]
+                    let (program, args) = config_cli::editor_argv(&editor, "vi");
+                    let status = std::process::Command::new(&program)
+                        .args(&args)
                         .arg(&text_path)
-                        .status()?;
+                        .status()
+                        .map_err(|e| anyhow::anyhow!("failed to run $EDITOR ({editor}): {e}"))?;
                     if !status.success() {
                         anyhow::bail!("Editor exited with status {status}");
                     }

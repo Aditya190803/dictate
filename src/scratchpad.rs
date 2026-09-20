@@ -18,7 +18,7 @@ fn scratchpad_path() -> PathBuf {
 
 fn ensure_parent(path: &Path) -> Result<()> {
     if let Some(p) = path.parent() {
-        std::fs::create_dir_all(p)?;
+        crate::config_cli::ensure_private_dir(p)?;
     }
     Ok(())
 }
@@ -34,6 +34,7 @@ pub fn append_text(chunk: &str) -> Result<PathBuf> {
             write!(f, "{chunk}")?;
         }
     }
+    crate::config_cli::restrict_perms(&path);
     Ok(path)
 }
 
@@ -60,11 +61,15 @@ pub fn open_in_editor() -> Result<()> {
     ensure_parent(&path)?;
     if !path.exists() {
         File::create(&path)?;
+        crate::config_cli::restrict_perms(&path);
     }
     let editor = crate::platform::default_editor();
-    let mut parts = editor.split_whitespace();
-    let program = parts.next().unwrap_or("vi");
-    let status = Command::new(program).args(parts).arg(&path).status();
+    #[cfg(windows)]
+    let (program, mut args) = crate::config_cli::editor_argv(&editor, "notepad");
+    #[cfg(not(windows))]
+    let (program, mut args) = crate::config_cli::editor_argv(&editor, "vi");
+    args.push(path.to_string_lossy().into_owned());
+    let status = Command::new(&program).args(&args).status();
     match status {
         Ok(s) if s.success() => Ok(()),
         Ok(s) => anyhow::bail!("editor exited with {s}"),

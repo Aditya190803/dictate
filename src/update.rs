@@ -124,14 +124,18 @@ fn read_cache() -> Option<UpdateCache> {
 fn write_cache(latest: &str) {
     let path = cache_path();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
+        if std::fs::create_dir_all(parent).is_ok() {
+            crate::config_cli::restrict_perms(parent);
+        }
     }
     let cache = UpdateCache {
         latest: latest.to_string(),
         checked_at: now_secs(),
     };
     if let Ok(raw) = serde_json::to_string(&cache) {
-        std::fs::write(path, raw).ok();
+        if std::fs::write(&path, raw).is_ok() {
+            crate::config_cli::restrict_perms(&path);
+        }
     }
 }
 

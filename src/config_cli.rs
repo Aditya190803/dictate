@@ -188,13 +188,62 @@ pub fn default_shortcut_keys() -> (&'static str, &'static str) {
     return ("SUPER,R", "SUPER,SHIFT,R");
 }
 
-pub fn ensure_config_file(path: &PathBuf) -> Result<()> {
+/// Create a directory (and parents) for a private config/text file.
+pub fn ensure_private_dir(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path)?;
+    restrict_perms(path);
+    Ok(())
+}
+
+/// Write a private file (API keys / vocabulary), tightening permissions.
+pub fn write_private_file(path: &Path, contents: &[u8]) -> Result<()> {
+    std::fs::write(path, contents)?;
+    restrict_perms(path);
+    Ok(())
+}
+
+/// Best-effort permissions on Unix so keys and transcripts are not
+/// world-readable: `0700` for directories (owner-traversal only), `0600` for
+/// files. No-op elsewhere (Windows uses ACLs).
+pub fn restrict_perms(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if path.is_dir() { 0o700 } else { 0o600 };
+        if let Ok(md) = std::fs::metadata(path) {
+            let mut perms = md.permissions();
+            if perms.mode() & 0o777 != mode {
+                perms.set_mode(mode);
+                let _ = std::fs::set_permissions(path, perms);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
+/// Split `$EDITOR` (or a fallback) into program + args for `Command`.
+pub fn editor_argv(editor: &str, fallback: &str) -> (String, Vec<String>) {
+    let raw = if editor.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        editor.to_string()
+    };
+    let mut parts = raw.split_whitespace();
+    let program = parts.next().unwrap_or(fallback).to_string();
+    let args: Vec<String> = parts.map(str::to_string).collect();
+    (program, args)
+}
+
+pub fn ensure_config_file(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        ensure_private_dir(parent)?;
     }
     if !path.exists() {
         let (live, smart) = default_shortcut_keys();
-        std::fs::write(
+        write_private_file(
             path,
             format!(
                 "TRANSCRIPTION_PROVIDER=mistral\nDICTATE_PROFILE=segmented\n\
@@ -205,8 +254,11 @@ pub fn ensure_config_file(path: &PathBuf) -> Result<()> {
                  TRANSCRIPTION_TIMEOUT_SECONDS=60\nTRANSCRIPTION_MAX_RETRIES=3\n\
                  ENABLE_AUDIO_FEEDBACK=true\nBEEP_VOLUME=0.1\n\
                  SHORTCUT_OUTPUT=type\nSHORTCUT_KEY_LIVE={live}\nSHORTCUT_KEY_SMART={smart}\n"
-            ),
+            )
+            .as_bytes(),
         )?;
+    } else {
+        restrict_perms(path);
     }
     Ok(())
 }
@@ -300,7 +352,7 @@ pub fn set_config_value(path: &PathBuf, key: &str, value: &str) -> Result<()> {
         lines.push(format!("{key}={value}"));
     }
 
-    std::fs::write(path, format!("{}\n", lines.join("\n")))?;
+    write_private_file(path, format!("{}\n", lines.join("\n")).as_bytes())?;
     Ok(())
 }
 
@@ -484,7 +536,15 @@ pub fn run_config_command(command: &ConfigCommand, path: &PathBuf) -> Result<()>
         ConfigCommand::Edit => {
             ensure_config_file(path)?;
             let editor = platform::default_editor();
-            let status = ProcessCommand::new(&editor).arg(path).status()?;
+            #[cfg(windows)]
+            let (program, args) = editor_argv(&editor, "notepad");
+            #[cfg(not(windows))]
+            let (program, args) = editor_argv(&editor, "vi");
+            let status = ProcessCommand::new(&program)
+                .args(&args)
+                .arg(path)
+                .status()
+                .map_err(|e| anyhow!("failed to run $EDITOR ({editor}): {e}"))?;
             if status.success() {
                 Ok(())
             } else {
@@ -858,7 +918,9 @@ fn daemon_log_target(argv: &[String]) -> Option<std::fs::File> {
     };
     let path = daemon_log_path(kind);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok()?;
+        if std::fs::create_dir_all(parent).is_ok() {
+            restrict_perms(parent);
+        }
     }
     // Truncate per launch: the interesting failure is always the latest one.
     std::fs::File::create(path).ok()
@@ -1413,6 +1475,22 @@ mod tests {
         assert_eq!(
             argv[5..].to_vec(),
             platform::pipe_to_for_mode("type").unwrap()
+        );
+    }
+
+    #[test]
+    fn editor_argv_splits_program_and_args() {
+        assert_eq!(
+            editor_argv("code --wait", "vi"),
+            ("code".to_string(), vec!["--wait".to_string()])
+        );
+        assert_eq!(
+            editor_argv("  ", "vi"),
+            ("vi".to_string(), Vec::<String>::new())
+        );
+        assert_eq!(
+            editor_argv("", "notepad"),
+            ("notepad".to_string(), Vec::<String>::new())
         );
     }
 

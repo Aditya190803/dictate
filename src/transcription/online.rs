@@ -85,8 +85,8 @@ impl OnlineTranscriptionProvider {
                     .part("file", audio_part)
                     .text("model", self.options.model.clone());
 
-                if let Some(lang) = language {
-                    form = form.text("language", lang.to_string());
+                if let Some(lang) = language.and_then(super::sanitize_language) {
+                    form = form.text("language", lang);
                 }
 
                 self.client.post(&url).multipart(form)
@@ -95,18 +95,19 @@ impl OnlineTranscriptionProvider {
                 // Deepgram takes the raw audio as the request body and reads
                 // options from the query string. `smart_format` gives punctuation
                 // and capitalisation, which the polish step then refines.
+                // The model id is percent-encoded so a crafted value cannot
+                // inject extra query parameters.
                 let mut url = format!(
                     "{}/v1/listen?model={}&smart_format=true",
-                    base, self.options.model
+                    base,
+                    super::encode_model(&self.options.model)
                 );
                 // Deepgram has no "auto" sentinel: omitting `language` lets it
                 // use the model default, and nova-3 needs `multi` to detect.
-                match language {
-                    Some(lang) if !lang.eq_ignore_ascii_case("auto") => {
-                        url.push_str("&language=");
-                        url.push_str(lang);
-                    }
-                    _ => {}
+                // Invalid codes fall back to auto (omit) with a warning.
+                if let Some(lang) = language.and_then(super::sanitize_language) {
+                    url.push_str("&language=");
+                    url.push_str(&lang);
                 }
 
                 self.client
@@ -367,5 +368,39 @@ mod tests {
         let (code, message) = parse_error_body("plain error");
         assert_eq!(code, None);
         assert_eq!(message, "plain error");
+    }
+
+    /// A crafted language must not leak into the query string: the sanitizer
+    /// maps it to auto (omitted), so the mock only matches the clean query.
+    #[tokio::test]
+    async fn deepgram_dialect_rejects_malicious_language() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/listen")
+            .match_query(mockito::Matcher::Exact(
+                "model=nova-3&smart_format=true".into(),
+            ))
+            .with_status(200)
+            .with_body(r#"{"results":{"channels":[{"alternatives":[{"transcript":"ok"}]}]}}"#)
+            .create_async()
+            .await;
+
+        let provider = OnlineTranscriptionProvider::new(OnlineProviderOptions {
+            provider_name: "Deepgram",
+            api_key: "dg-key".to_string(),
+            timeout_seconds: 30,
+            max_retries: 0,
+            model: "nova-3".to_string(),
+            base_url: server.url(),
+            auth_style: AuthStyle::Token,
+            dialect: ApiDialect::Deepgram,
+        })
+        .unwrap();
+
+        provider
+            .transcribe_with_language(vec![0u8; 32], Some("en&smart_format=false".to_string()))
+            .await
+            .unwrap();
+        mock.assert_async().await;
     }
 }

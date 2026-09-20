@@ -47,7 +47,7 @@ pub fn append_transcript(text: &str, profile: &str, enabled: bool) -> Result<()>
 
     let path = history_path();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::config_cli::ensure_private_dir(parent)?;
     }
 
     let entry = HistoryEntry {
@@ -60,6 +60,7 @@ pub fn append_transcript(text: &str, profile: &str, enabled: bool) -> Result<()>
         let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
         writeln!(f, "{line}")?;
     }
+    crate::config_cli::restrict_perms(&path);
     trim_file(&path)?;
     Ok(())
 }
@@ -75,6 +76,7 @@ fn trim_file(path: &Path) -> Result<()> {
     for line in keep {
         writeln!(out, "{line}")?;
     }
+    crate::config_cli::restrict_perms(path);
     Ok(())
 }
 

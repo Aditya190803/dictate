@@ -36,6 +36,7 @@ mod text_processing;
 mod transcript;
 mod transcription;
 mod typing;
+mod update;
 mod wav;
 
 #[cfg(test)]
@@ -119,6 +120,8 @@ enum Commands {
     },
     /// Check config, API keys, and optional dependencies
     Doctor,
+    /// Check for a newer release and show how to install it
+    Update,
     /// Interactive setup (profiles, keys, shortcuts)
     Setup {
         /// Skip provider/beep questions
@@ -462,6 +465,13 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // Cheap cached-only nudge (no network, stderr only so transcript
+    // stdout stays clean). `dictate update` reports for itself.
+    if !matches!(&args.command, Some(Commands::Update)) {
+        update::print_cached_notice();
+    }
+
     let envfile = args
         .envfile
         .clone()
@@ -478,6 +488,11 @@ async fn main() -> Result<()> {
             Commands::Doctor => {
                 let config = load_config_for_doctor(&envfile)?;
                 config_cli::run_doctor(&config, &envfile);
+                update::print_fresh_status().await;
+                return Ok(());
+            }
+            Commands::Update => {
+                update::run_update_command().await?;
                 return Ok(());
             }
             Commands::Setup { quick } => {

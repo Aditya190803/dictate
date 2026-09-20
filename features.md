@@ -15,7 +15,7 @@ Open-source, local-first, CLI-native. Ignore billing, teams, enterprise complian
 | 5 | **Developer dictation modes** | `--dictation-mode` (markdown, git, terminal, code symbols, paths) |
 | — | **Default dictation** | `segmented`: pause-bound segments + context + per-segment polish |
 | — | **LLM polish** | `text.toml` → `[polish]` (Mistral chat per segment; legacy whole-clip on `smart_paste`) |
-| — | **Setup & health** | `dictate setup`, `dictate doctor`, `dictate config wizard` |
+| — | **Setup & health** | `dictate setup`, `dictate doctor`, `dictate config wizard`, `dictate update` |
 
 **Pipeline (implemented):**
 

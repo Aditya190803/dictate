@@ -22,7 +22,7 @@ cargo build --release --features words-ui
 ### Windows
 
 ```powershell
-cargo build --release          # no C compiler needed; MSVC or MinGW linker required
+irm https://dictate.adityamer.dev/install.ps1 | iex
 dictate setup
 dictate autostart install      # background hotkey agent, runs at login
 ```

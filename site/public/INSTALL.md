@@ -482,6 +482,10 @@ Set `ENABLE_AUDIO_FEEDBACK=false` to disable all beeps.
 - Try increasing `BEEP_VOLUME` in config
 - Check if `ENABLE_AUDIO_FEEDBACK` is set to `true`
 
+## Updates
+
+`dictate update` checks the latest GitHub Release and tells you how to reinstall. `dictate doctor` reports it too, and every other command nudges on stderr when a newer release is already known (cached for 24h — the recording path never touches the network). Opt out with `DICTATE_NO_UPDATE_CHECK=1`.
+
 ---
 
 ## Uninstall

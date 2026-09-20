@@ -351,14 +351,9 @@ mod tests {
             context_editing: false,
             ..Config::default()
         };
-        let edited = handle_live_delta(
-            &backend,
-            &mut buffer,
-            &config,
-            "Hello world. scratch that",
-        )
-        .await
-        .unwrap();
+        let edited = handle_live_delta(&backend, &mut buffer, &config, "Hello world. scratch that")
+            .await
+            .unwrap();
         assert!(!edited);
         assert_eq!(buffer.text(), "Hello world. scratch that");
         assert!(backend

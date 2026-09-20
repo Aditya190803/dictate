@@ -28,12 +28,12 @@ const INSTALL: Record<
   },
   windows: {
     label: "Windows",
-    cmd: "cargo build --release && dictate setup",
+    cmd: "irm https://dictate.adityamer.dev/install.ps1 | iex",
     note: (
       <>
-        No C compiler needed — TLS uses SChannel. Requires the MSVC or MinGW-w64
-        linker. Typing, clipboard, and global shortcuts are in-process Win32
-        calls.
+        Downloads the latest release binary (or builds from source), adds
+        dictate to PATH, then run <code className="font-mono text-[0.85em]">dictate setup</code>.
+        No C compiler needed — TLS uses SChannel.
       </>
     ),
   },

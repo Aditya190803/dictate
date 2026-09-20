@@ -137,6 +137,28 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 
 Same binary and same config keys as Linux. The platform glue differs: output sinks are in-process Win32 calls (no `ydotool` / `wl-clipboard`), audio is WASAPI (no PipeWire), and daemon control is a named pipe (no `SIGUSR1`). Full detail: **[docs/windows.md](docs/windows.md)**.
 
+### Quick Install (Windows)
+
+One command (PowerShell):
+
+```powershell
+irm https://dictate.adityamer.dev/install.ps1 | iex
+```
+
+The installer will:
+1. Download the latest binary from GitHub Releases, or build from source
+2. Install `dictate.exe` to `~/bin` and add it to your user `PATH`
+3. Run **`dictate config wizard`** to configure interactively (skipped with `$env:DICTATE_SKIP_WIZARD = "yes"`)
+
+Then:
+
+```powershell
+dictate setup      # same wizard; reports Windows-specific checks
+dictate doctor
+```
+
+To force a source build: `$env:DICTATE_BUILD_FROM_SOURCE = "yes"; irm https://dictate.adityamer.dev/install.ps1 | iex`
+
 ### Toolchain
 
 | Item | Status |
@@ -148,9 +170,9 @@ Same binary and same config keys as Linux. The platform glue differs: output sin
 | `--features words-ui` | Not supported on Windows (GTK4) |
 | `--features local` | Not supported/tested on Windows (whisper-rs needs cmake + clang) |
 
-### Build
+### Manual Build (from source)
 
-Pick one toolchain:
+Pick one toolchain (only needed if you skip the installer above):
 
 ```powershell
 # Option A — MSVC (the Rust default on Windows)

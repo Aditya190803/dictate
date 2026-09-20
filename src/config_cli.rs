@@ -575,7 +575,7 @@ pub fn run_doctor(config: &Config, env_path: &Path) {
         .unwrap_or(default_shortcut_key());
     println!("✓ Shortcut: {key} → dictate");
     println!(
-        "✓ Words UI: run `dictate words` to edit {}",
+        "✓ Dictionary: `dictate words` lists terms; `dictate words Hyprland` adds one ({})",
         Config::text_config_path_for_env_file(env_path).display()
     );
     let word_count = crate::text_processing::preferred_vocabulary(&config.text_processing).len();

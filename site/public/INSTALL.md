@@ -225,7 +225,7 @@ Shortcut strings accept `SUPER,R`, `Meta+Shift+R`, and `<Super>r` styles; a modi
 |---------|-----|
 | Hotkey never fires | Combo is taken by Windows or another app (classically `Win+R`) — pick another and run `dictate setup` |
 | Nothing typed into an app running as Administrator | `SendInput` cannot reach elevated windows unless dictate is elevated too; run dictate as Administrator or use `SHORTCUT_OUTPUT=clipboard` |
-| `dictate words` opens Notepad instead of the GUI | Expected — the `words-ui` GTK build is Linux-only; set `$EDITOR` to change the editor |
+| `dictate words` | Lists your dictionary; `dictate words Hyprland` adds a name. GTK GUI is Linux `words-ui` only. |
 | First key press is slow | Run `dictate setup` and accept login autostart |
 | Nothing happens on the shortcut | Run `dictate doctor`, then `dictate setup` |
 

@@ -49,7 +49,7 @@ Legend: **Partial** = similar idea, weaker or different UX. **Done** = shipped i
 
 | Flow | dictate |
 |------|---------|
-| Snippets / dictionary GUI | **Partial:** `dictate words` GUI for preferred words + dictionary aliases; snippets still use `text.toml` |
+| Snippets / dictionary GUI | **Done:** `dictate words` (and `dictate words Hyprland`) for preferred words; aliases still in `text.toml`. Snippets still use `text.toml` |
 | Hotkeys | One shortcut from `dictate setup` (bind `dictate`) |
 
 ---

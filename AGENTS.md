@@ -33,7 +33,7 @@ dictate doctor
 ## Run
 
 - **Dictation:** `dictate` (or your shortcut).
-- **Dictionary:** `dictate words` (requires `words-ui` build).
+- **Dictionary:** `dictate words` / `dictate words Hyprland` (GTK UI needs `words-ui`).
 
 ## Windows
 

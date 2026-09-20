@@ -77,7 +77,7 @@ Global shortcuts come from a background hotkey agent. `dictate setup` installs i
 | Limit | Detail |
 |-------|--------|
 | Elevated windows | `SendInput` cannot type into a window running as Administrator unless dictate is elevated too. Run dictate as Administrator, or use `clipboard` output. |
-| `dictate words` GUI | Needs the `words-ui` GTK feature, which is not built on Windows. `dictate words` falls back to opening `text.toml` in an editor (`notepad` by default, or `$EDITOR`). |
+| `dictate words` | Lists terms and can add them (`dictate words Hyprland`). The GTK GUI needs `words-ui`, which is Linux-only. |
 | Local Whisper | `--features local` is not supported on Windows; use Mistral or Groq. |
 
 ## Troubleshooting

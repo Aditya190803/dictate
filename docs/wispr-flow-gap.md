@@ -34,14 +34,14 @@ Legend: **Partial** = similar idea, weaker or different UX. **Done** = shipped i
 
 | Flow | dictate |
 |------|---------|
-| Polished writing | **Partial:** `[polish]` via Mistral or Ollama (`POLISH_PROVIDER=auto`) on **smart_paste** + **segmented**; live typing skips polish for latency |
+| Polished writing | **Done:** `[polish]` on each pause (and on one-shot clips) via OpenCode Zen / Mistral / Ollama |
 | **Flow Styles** | **Done:** `[polish].style` — casual, formal, concise, email, bullets |
-| **Smart formatting & backtrack** | **Partial:** cleanup + replace X with Y + voice deletes; `undo that` → last sentence |
+| **Smart formatting & backtrack** | **Partial:** cleanup + replace X with Y + voice deletes while typing; `scratch that` / `undo that` → last sentence |
+| Realtime formatting | **Partial:** words type as they arrive; polish rewrites the last phrase on pause |
 | **Context awareness** | **Partial:** `CONTEXT_EDITING` + session buffer; no app OCR |
 | IDE variable recognition | **Partial:** `--dictation-mode code-symbols` |
 | **File tagging** | — |
 | Command mode (AI on selection) | **Done:** `DICTATE_PROFILE=command` + `[command_mode] use_llm` |
-| Realtime formatting | **Partial:** raw deltas on `live_typing`; segmented/smart modes format after a pause or stop |
 
 ---
 
@@ -50,7 +50,7 @@ Legend: **Partial** = similar idea, weaker or different UX. **Done** = shipped i
 | Flow | dictate |
 |------|---------|
 | Snippets / dictionary GUI | **Partial:** `dictate words` GUI for preferred words + dictionary aliases; snippets still use `text.toml` |
-| Hotkeys | `dictate shortcuts` (Hyprland/Niri/GNOME/KDE/Sway), with exact daemon matching per profile |
+| Hotkeys | One shortcut from `dictate setup` (bind `dictate`) |
 
 ---
 
@@ -71,6 +71,6 @@ Mobile apps, macOS/Windows clients, cloud sync, in-app styles GUI, file tagging,
 
 ## dictate strengths
 
-CLI/stdout/`--pipe-to`, local Whisper, Groq, open `.env` + `text.toml`, GPL, developer dictation modes, segmented/live/smart/batch profiles, `SIGUSR1` daemon.
+CLI/stdout/`--pipe-to`, local Whisper, Groq, open `.env` + `text.toml`, GPL, developer dictation modes, `SIGUSR1` daemon.
 
 See [`context-aware-editing.md`](context-aware-editing.md) for context-editing notes.

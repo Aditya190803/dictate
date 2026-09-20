@@ -13,9 +13,9 @@ Open-source, local-first, CLI-native. Ignore billing, teams, enterprise complian
 | 3 | **Text cleanup** | `text.toml` → `[cleanup]` |
 | 4 | **Command mode** | `dictate --command` (clipboard + local transforms) |
 | 5 | **Developer dictation modes** | `--dictation-mode` (markdown, git, terminal, code symbols, paths) |
-| — | **Default dictation** | `segmented`: pause-bound segments + context + per-segment polish |
-| — | **LLM polish** | `text.toml` → `[polish]` (Mistral chat per segment; legacy whole-clip on `smart_paste`) |
-| — | **Setup & health** | `dictate setup`, `dictate doctor`, `dictate config wizard`, `dictate update` |
+| — | **Default dictation** | One shortcut: type as you speak, voice edits, polish on pause |
+| — | **LLM polish** | `text.toml` → `[polish]` (per utterance; also whole-clip on one-shot) |
+| — | **Setup & health** | `dictate setup`, `dictate doctor`, `dictate config get|set|edit` |
 
 **Pipeline (implemented):**
 
@@ -32,16 +32,9 @@ audio → transcription → dictionary → inline fixes → snippets → cleanup
 
 ### Shipped (single default path)
 
-- **`segmented`** profile (default): Mistral realtime segments or VAD + polish + `CONTEXT_EDITING`.
-- **One shortcut** in `dictate setup`.
-- **Legacy**: `DICTATE_PROFILE=live_typing|smart_paste` via env / `--mode`.
-
-### A. Context-aware realtime editing (v1.1.0 candidate)
-
-Spoken corrections while live typing: “scratch that”, delete last line/sentence, implicit rewrites (“actually by 11”).
-
-- **Branch:** `context-aware-editing` (large refactor; not merged).
-- **Plan:** see [`docs/context-aware-editing.md`](docs/context-aware-editing.md) — prefer porting intent + edit layer onto current `main` rather than merging the branch as-is.
+- One dictation product: type as you speak, voice edits (`scratch that`, `no I mean …`), polish on pause.
+- One shortcut in `dictate setup`. Press the key or run `dictate`.
+- `DICTATE_PROFILE=live_typing|smart_paste` are aliases of that product.
 
 ### B. Command mode — LLM + selection
 

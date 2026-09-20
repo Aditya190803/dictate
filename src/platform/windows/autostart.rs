@@ -145,6 +145,6 @@ pub fn print_status() {
     };
     println!("Dictate hotkey agent: {marker} {state}");
     if !running {
-        println!("  Run: dictate autostart install");
+        println!("  Run: dictate setup");
     }
 }

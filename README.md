@@ -1,6 +1,6 @@
 # dictate
 
-Speech-to-text for Linux (Wayland) and Windows: global shortcuts, daemon-friendly, stdout-first. Speak in phrases and get **polished text** in the focused app (default **segmented** profile), or use **live typing** / **smart paste** on a second key.
+Speech-to-text for Linux (Wayland) and Windows: one shortcut, daemon-friendly, stdout-first. Words appear as you speak, pauses polish the last phrase, and voice edits (`scratch that`, `no I mean …`) rewrite what was just typed.
 
 Not [Wispr Flow](https://wisprflow.ai/) — see [docs/wispr-flow-gap.md](docs/wispr-flow-gap.md).
 
@@ -24,23 +24,23 @@ cargo build --release --features words-ui
 ```powershell
 irm https://dictate.adityamer.dev/install.ps1 | iex
 dictate setup
-dictate autostart install      # background hotkey agent, runs at login
+dictate doctor
 ```
 
 No ydotool/wl-clipboard/PipeWire — typing, paste, and clipboard are in-process Win32. Full guide: **[docs/windows.md](docs/windows.md)**.
 
-## Recommended shortcuts
+## Shortcut
 
-| Key | Behavior |
-|-----|----------|
-| **Super+R** | Live typing — Mistral realtime deltas as you speak (`dictate toggle live`) |
-| **Super+Shift+R** | Smart paste — record, stop, polish once, paste (`dictate toggle smart`) |
+One key starts and stops dictation (`dictate`):
 
-GNOME: `dictate shortcuts gnome --install`. Hyprland/Niri: `dictate shortcuts hyprland` / `niri` (paste into config).
+| Platform | Default |
+|----------|---------|
+| **Linux** | Super+R |
+| **Windows** | Ctrl+Alt+R (`Win+R` is the Run dialog and cannot be registered) |
 
-**Windows:** `Win+R` is reserved by the OS, so the defaults will not register — use `SHORTCUT_KEY_LIVE=CTRL,ALT,R` and `SHORTCUT_KEY_SMART=CTRL,ALT,SHIFT,R`, then `dictate hotkeys` (or `dictate autostart install`).
+GNOME and Windows: `dictate setup` installs the key. Hyprland/Niri: bind the key to `dictate`.
 
-Default **segmented** dictation (`DICTATE_PROFILE=segmented` or `dictate --daemon`): pause-bound segments, dictionary/snippets/cleanup, optional **LLM polish** per segment, voice edits (“scratch that”). Run `dictate setup` once.
+Run `dictate setup` once.
 
 ## Features
 
@@ -48,8 +48,7 @@ Default **segmented** dictation (`DICTATE_PROFILE=segmented` or `dictate --daemo
 - **Polish:** Independent of STT — `POLISH_PROVIDER=auto` uses **OpenCode Zen** (`big-pickle`) if `OPENCODE_API_KEY` is set, else Mistral if `MISTRAL_API_KEY` is set, else **Ollama** (`ollama pull gemma-4`). Groq/local STT + Ollama polish works.
 - **Dictionary:** `dictate words` — GUI for names, jargon, and misspelling fixes (`words-ui` build)
 - **text.toml:** Dictionary, snippets, cleanup, `[polish]` style/model, command mode
-- **Extras:** `dictate history`, `dictate scratchpad`, clipboard-aware command mode
-- **Output:** stdout, clipboard, type, or paste — `SHORTCUT_OUTPUT` / `--pipe-to` (Linux: `ydotool`/`wl-copy`; Windows: in-process `SendInput`/Win32 clipboard)
+- **Output:** stdout, clipboard, type, or paste — `SHORTCUT_OUTPUT` (Linux: `ydotool`/`wl-copy`; Windows: in-process `SendInput`/Win32 clipboard)
 
 ## Quick config
 
@@ -58,10 +57,9 @@ Default **segmented** dictation (`DICTATE_PROFILE=segmented` or `dictate --daemo
 ```bash
 TRANSCRIPTION_PROVIDER=mistral
 MISTRAL_API_KEY=...
-DICTATE_PROFILE=segmented          # or live_typing, smart_paste, batch_clip
+DICTATE_PROFILE=segmented
 SHORTCUT_OUTPUT=type
 SHORTCUT_KEY_LIVE=SUPER,R
-SHORTCUT_KEY_SMART=SUPER,SHIFT,R
 POLISH_PROVIDER=auto               # auto | opencode | mistral | ollama
 OPENCODE_API_KEY=...               # text polish only — OpenCode Zen does not do STT
 OLLAMA_BASE_URL=http://127.0.0.1:11434
@@ -82,31 +80,19 @@ style = "concise"    # casual, formal, email, bullets — see polish_styles
 on_failure = "fallback"
 ```
 
-CLI: `dictate config wizard` · `dictate config get|set|edit` · `dictate words`
+CLI: `dictate` · `dictate setup` · `dictate doctor` · `dictate config get|set|edit` · `dictate words`
 
 ## Common commands
 
 ```bash
-dictate --daemon                   # segmented (default product)
-dictate --daemon --mode live       # realtime typing daemon
-dictate --daemon --mode smart      # smart paste daemon
-dictate --pipe-to wl-copy          # one-shot clip → clipboard
-dictate --command                  # transform clipboard from voice instruction
-dictate --download-model           # local Whisper GGML into ~/.local/share/dictate/models
-dictate --dictation-mode terminal  # developer formatting modes
+dictate setup
+dictate doctor
+dictate                 # start or stop dictation
+dictate words           # dictionary
+dictate config set KEY value
 ```
 
-Signal toggle while a daemon runs: `pkill -SIGUSR1 dictate` (shortcuts usually wrap `dictate toggle live|smart`). Windows has no SIGUSR1 — daemons listen on a named pipe and `dictate toggle live|smart` is the only path.
-
-## Profiles (power users)
-
-| `DICTATE_PROFILE` | What you get |
-|-------------------|--------------|
-| `segmented` | Default — phrases, per-segment polish, session context |
-| `live_typing` | Raw realtime deltas, minimal latency |
-| `smart_paste` | One recording, polish whole clip, paste at end |
-| `batch_clip` | One clip, local cleanup only, no LLM polish |
-| `command` | Voice instruction applies to clipboard text |
+Bind `dictate` to a shortcut. Clipboard commands run on that same press when you copied text first.
 
 ## Requirements
 

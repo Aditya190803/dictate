@@ -2,7 +2,7 @@
 
 use crate::config::Config;
 use crate::config_cli::{
-    default_shortcut_keys, ensure_config_file, install_gnome_shortcuts, print_shortcut,
+    default_shortcut_key, ensure_config_file, install_gnome_shortcuts, print_shortcut,
     read_config_value, run_autostart_command, run_doctor, set_config_value, AutostartCommand,
     ShortcutArgs, ShortcutDesktop, ShortcutMode,
 };
@@ -96,32 +96,23 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
         }
     }
 
-    // First shortcut = live realtime typing, second = smart paste (INSTALL.md
-    // default). The actual combos come from default_shortcut_keys() per platform.
     set_config_value(&path, "profile", "segmented")?;
     set_config_value(&path, "batch-mode", "false")?;
     set_config_value(&path, "transcription-mode", "auto")?;
     set_config_value(&path, "language", "auto")?;
     set_config_value(&path, "shortcut-output", "type")?;
 
-    let (default_live, default_smart) = default_shortcut_keys();
-    let live_key = if quick {
-        default_live.to_string()
+    let default_key = default_shortcut_key();
+    let shortcut = if quick {
+        default_key.to_string()
     } else {
-        Text::new("Live typing shortcut (words as you speak)")
-            .with_default(default_live)
-            .with_help_message("Example: CTRL,ALT,R or SUPER,SHIFT,R")
+        Text::new("Shortcut (start/stop dictation)")
+            .with_default(default_key)
+            .with_help_message("Example: CTRL,ALT,R or SUPER,R")
             .prompt()?
     };
-    let smart_key = if quick {
-        default_smart.to_string()
-    } else {
-        Text::new("Smart paste shortcut (polish when you stop)")
-            .with_default(default_smart)
-            .prompt()?
-    };
-    set_config_value(&path, "shortcut-key-live", live_key.trim())?;
-    set_config_value(&path, "shortcut-key-smart", smart_key.trim())?;
+    set_config_value(&path, "shortcut-key-live", shortcut.trim())?;
+    set_config_value(&path, "shortcut-key", shortcut.trim())?;
 
     let detected = detect_desktop();
     let desktop = if quick {
@@ -134,7 +125,6 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
             .prompt()?
     };
     set_config_value(&path, "shortcut-desktop", &desktop)?;
-    set_config_value(&path, "shortcut-key", live_key.trim())?;
 
     let beeps = Confirm::new("Audio feedback beeps?")
         .with_default(true)
@@ -146,20 +136,16 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
     )?;
 
     let desktop_enum = parse_shortcut_desktop(&desktop);
-    let live_key_saved =
-        read_config_value(&path, "SHORTCUT_KEY_LIVE")?.unwrap_or_else(|| default_live.to_string());
-    let smart_key_saved = read_config_value(&path, "SHORTCUT_KEY_SMART")?
-        .unwrap_or_else(|| default_smart.to_string());
+    let key_saved = read_config_value(&path, "SHORTCUT_KEY_LIVE")?
+        .unwrap_or_else(|| default_shortcut_key().to_string());
 
     println!("\n✓ Saved {}\n", path.display());
 
     let mut shortcuts_done = false;
     if matches!(desktop_enum, ShortcutDesktop::Gnome) {
-        let install = Confirm::new("Install GNOME keyboard shortcuts now?")
+        let install = Confirm::new("Install the GNOME keyboard shortcut now?")
             .with_default(true)
-            .with_help_message(
-                "Same as `dictate shortcuts gnome --install` (dictate toggle live / smart)",
-            )
+            .with_help_message("Installs Super+R (or your key) as `dictate`")
             .prompt()?;
         if install {
             match install_gnome_shortcuts(env_path) {
@@ -170,47 +156,33 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
     }
 
     if !shortcuts_done {
-        println!("Add these shortcuts in your desktop (copy each block):\n");
-        println!("── Live typing — {live_key_saved} ──\n");
+        println!("Add this shortcut in your desktop:\n");
         print_shortcut(
             &ShortcutArgs {
                 desktop: desktop_enum,
-                profile: "live_typing".to_string(),
+                profile: "segmented".to_string(),
                 mode: ShortcutMode::Type,
-                key: live_key_saved.clone(),
-                install: false,
-            },
-            env_path,
-        );
-        println!("\n── Smart paste — {smart_key_saved} ──\n");
-        print_shortcut(
-            &ShortcutArgs {
-                desktop: desktop_enum,
-                profile: "smart_paste".to_string(),
-                mode: ShortcutMode::Paste,
-                key: smart_key_saved.clone(),
+                key: key_saved,
                 install: false,
             },
             env_path,
         );
         if matches!(desktop_enum, ShortcutDesktop::Gnome) {
-            println!("\nOr run: dictate shortcuts gnome --install");
+            println!("\nOr bind this command in Settings → Keyboard: dictate");
         } else if matches!(desktop_enum, ShortcutDesktop::Kde | ShortcutDesktop::Other) {
-            println!("\nCreate two custom shortcuts in Settings → Keyboard.");
+            println!("\nCreate a custom shortcut in Settings → Keyboard.");
         }
     }
 
-    // On Windows this also registers the shortcuts themselves — there is no
-    // compositor to hold them, so the agent has to be running.
     #[cfg(windows)]
     let (question, help) = (
         "Run the Dictate hotkey agent at login?",
-        "Required for the shortcuts to work at all. Also keeps live + smart daemons warm.",
+        "Required for the shortcut to work at all. Also keeps the daemon warm.",
     );
     #[cfg(unix)]
     let (question, help) = (
-        "Start warm Dictate daemons at login for instant shortcuts?",
-        "Recommended: removes cold-start delay by keeping live + smart daemons idle until you press a shortcut.",
+        "Start a warm Dictate daemon at login for instant shortcuts?",
+        "Recommended: removes cold-start delay by keeping the daemon idle until you press the shortcut.",
     );
 
     let warm = Confirm::new(question)
@@ -220,10 +192,10 @@ pub fn run_setup(quick: bool, env_path: &Path) -> Result<()> {
     if warm {
         if let Err(e) = run_autostart_command(&AutostartCommand::Install) {
             eprintln!("⚠ Could not set up autostart: {e}");
-            eprintln!("  You can retry later with: dictate autostart install");
+            eprintln!("  You can retry later with: dictate setup");
         }
     } else {
-        println!("Skipped. You can enable later with: dictate autostart install");
+        println!("Skipped. You can enable later with: dictate setup");
     }
 
     let run_doc = Confirm::new("Run dictate doctor now?")

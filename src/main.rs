@@ -59,47 +59,45 @@ use config_cli::{
 #[cfg(not(test))]
 use control::{Control, ControlEvent};
 #[cfg(not(test))]
-use profile::DictateProfile;
-#[cfg(not(test))]
 use transcription::{SharedProvider, TranscriptionFactory};
 
 // ─── CLI argument definitions ────────────────────────────────────────────────
 
 #[derive(Parser)]
 #[command(name = "dictate")]
-#[command(about = "Speech-to-Text for Wayland and Windows - shortcut-driven transcription")]
+#[command(about = "Speech to text. Run with no arguments to start or stop.")]
 #[command(version)]
 struct Args {
     /// Path to environment file
-    #[arg(long)]
+    #[arg(long, hide = true)]
     envfile: Option<PathBuf>,
 
     /// Pipe transcribed text to the specified command
-    #[arg(long, short = 'p', num_args = 1.., value_name = "COMMAND", allow_hyphen_values = true, trailing_var_arg = true)]
+    #[arg(long, short = 'p', num_args = 1.., value_name = "COMMAND", allow_hyphen_values = true, trailing_var_arg = true, hide = true)]
     pipe_to: Option<Vec<String>>,
 
     /// Download the configured local model and exit
-    #[arg(long)]
+    #[arg(long, hide = true)]
     download_model: bool,
 
     /// Stream mode: continuously transcribe speech with VAD
-    #[arg(long)]
+    #[arg(long, hide = true)]
     stream: bool,
 
     /// Daemon mode: keep running with model loaded in memory
-    #[arg(long)]
+    #[arg(long, hide = true)]
     daemon: bool,
 
-    /// Start daemon warm but idle; a shortcut or `dictate toggle` begins recording
-    #[arg(long)]
+    /// Start daemon warm but idle; a shortcut or `dictate` begins recording
+    #[arg(long, hide = true)]
     idle_on_start: bool,
 
     /// Developer dictation mode
-    #[arg(long, default_value = "plain")]
+    #[arg(long, default_value = "plain", hide = true)]
     dictation_mode: String,
 
-    /// Shortcut mode: live (realtime) or smart (polish + context-friendly)
-    #[arg(long, value_parser = ["live", "smart"])]
+    /// Legacy daemon slot (`live` / `smart` are the same dictation)
+    #[arg(long, value_parser = ["live", "smart"], hide = true)]
     mode: Option<String>,
 
     #[command(subcommand)]
@@ -108,49 +106,50 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Read, write, or interactively create configuration
-    Config {
-        #[command(subcommand)]
-        command: Box<ConfigCommand>,
-    },
-    /// Print compositor shortcut snippets
-    Shortcuts(ShortcutArgs),
-    /// Start or toggle the live/smart daemon (what a shortcut runs)
-    Toggle {
-        #[arg(value_enum)]
-        kind: ToggleKind,
-    },
-    /// Check config, API keys, and optional dependencies
-    Doctor,
-    /// Check for a newer release and show how to install it
-    Update,
-    /// Interactive setup (profiles, keys, shortcuts)
+    /// First-time setup
     Setup {
         /// Skip provider/beep questions
         #[arg(long)]
         quick: bool,
     },
-    /// Local transcript history (no cloud)
+    /// Check the install
+    Doctor,
+    /// Read or write config
+    Config {
+        #[command(subcommand)]
+        command: Box<ConfigCommand>,
+    },
+    /// Edit dictionary
+    Words,
+    /// Print compositor shortcut snippets
+    #[command(hide = true)]
+    Shortcuts(ShortcutArgs),
+    /// Alias of bare `dictate`
+    #[command(hide = true)]
+    Toggle {
+        #[arg(value_enum)]
+        kind: Option<ToggleKind>,
+    },
+    #[command(hide = true)]
+    Update,
+    #[command(hide = true)]
     History {
         #[command(subcommand)]
         command: HistoryCommand,
     },
-    /// Local markdown notes from dictation
+    #[command(hide = true)]
     Scratchpad {
         #[command(subcommand)]
         command: ScratchpadCommand,
     },
-    /// Open the preferred-words manager for names, tools, and common mishearings
-    Words,
-    /// Install/remove/status login startup for instant shortcuts
+    #[command(hide = true)]
     Autostart {
         #[command(subcommand)]
         command: AutostartCommand,
     },
-    /// Hold the global shortcuts and toggle daemons when they are pressed
     #[cfg(windows)]
+    #[command(hide = true)]
     Hotkeys {
-        /// Start idle daemons up front so the first press has no cold start
         #[arg(long)]
         warm: bool,
     },
@@ -395,7 +394,7 @@ async fn run_daemon_clip_mode(config: &Config, args: &ArgsWithPipe<'_>) -> Resul
     let mut control = Control::start(control::Slot::from_mode(args.base.mode.as_deref()))?;
     let mut is_recording = false;
 
-    if config.profile == DictateProfile::SmartPaste && !args.base.idle_on_start {
+    if config.profile.is_dictation() && !args.base.idle_on_start && !config.use_realtime_stt() {
         info!("Smart paste recording started");
         beep_player.play_async(BeepType::RecordingStart).await.ok();
         tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
@@ -611,6 +610,11 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
         }
+        return Ok(());
+    }
+
+    if !args.daemon && !args.stream && !args.download_model {
+        run_toggle_daemon(None)?;
         return Ok(());
     }
 

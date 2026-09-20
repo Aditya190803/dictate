@@ -3,9 +3,11 @@ use crate::audio_processing::AudioProcessor;
 use crate::beep::{BeepConfig, BeepPlayer, BeepType};
 use crate::command;
 use crate::config::Config;
+use crate::context_session::{handle_final_segment, handle_live_delta};
 use crate::segment_output::emit_finalized_segment;
 use crate::transcript::TranscriptBuffer;
 use crate::transcription::{SharedProvider, TranscriptionFactory};
+use crate::typing::OutputBackend;
 use crate::wav::WavEncoder;
 use anyhow::{anyhow, Result};
 use base64::Engine;
@@ -766,7 +768,7 @@ async fn emit_preview_flush(
         }
     } else if type_deltas {
         let text = crate::text_processing::process_text(&text, &config.text_processing);
-        emit_text(&text, pipe_owned.as_ref()).await;
+        emit_live_delta(&text, config, pipe_owned.as_ref(), &session_buffer).await;
     } else {
         eprintln!("\n📝 {}", text.trim());
     }
@@ -802,10 +804,36 @@ async fn handle_realtime_segment(
             eprintln!("❌ Segment output failed: {e}");
         }
     } else if type_deltas {
-        let segment = crate::text_processing::process_text(segment, &config.text_processing);
-        emit_text(&segment, pipe_owned).await;
+        if config.context_editing {
+            let backend = OutputBackend::new(pipe_owned.cloned());
+            let mut buffer = session_buffer.lock().await;
+            if let Err(e) =
+                handle_final_segment(&backend, &mut buffer, config, segment, dictation_mode).await
+            {
+                eprintln!("❌ Output failed: {e}");
+            }
+        } else {
+            let segment = crate::text_processing::process_text(segment, &config.text_processing);
+            emit_text(&segment, pipe_owned).await;
+        }
     } else {
         eprintln!("\n📝 {segment}");
+    }
+}
+
+async fn emit_live_delta(
+    text: &str,
+    config: &Config,
+    pipe_command: Option<&Vec<String>>,
+    session_buffer: &Arc<Mutex<TranscriptBuffer>>,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let backend = OutputBackend::new(pipe_command.cloned());
+    let mut buffer = session_buffer.lock().await;
+    if let Err(e) = handle_live_delta(&backend, &mut buffer, config, text).await {
+        eprintln!("❌ Live output failed: {e}");
     }
 }
 
@@ -1097,7 +1125,13 @@ async fn run_mistral_realtime_inner(
                                                 delta,
                                                 &config.text_processing,
                                             );
-                                            emit_text(&delta, pipe_owned.as_ref()).await;
+                                            emit_live_delta(
+                                                &delta,
+                                                &config,
+                                                pipe_owned.as_ref(),
+                                                &session_buffer,
+                                            )
+                                            .await;
                                         } else if config.profile.uses_segment_polish() {
                                             preview_tail.push_str(delta);
                                         }
@@ -1146,7 +1180,13 @@ async fn run_mistral_realtime_inner(
                                                 &tail,
                                                 &config.text_processing,
                                             );
-                                            emit_text(&tail, pipe_owned.as_ref()).await;
+                                            emit_live_delta(
+                                                &tail,
+                                                &config,
+                                                pipe_owned.as_ref(),
+                                                &session_buffer,
+                                            )
+                                            .await;
                                         } else {
                                             eprintln!("\n📝 {}", tail.trim());
                                         }

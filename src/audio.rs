@@ -205,29 +205,29 @@ impl AudioRecorder {
 
     /// Return a clone of the recorded audio buffer.
     pub fn get_audio_data(&self) -> Result<Vec<f32>> {
-        let buffer = self
-            .buffer
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Failed to lock audio buffer"))?;
+        let buffer = self.buffer.lock().map_err(|e| {
+            log::warn!("Audio buffer mutex poisoned: {e}");
+            anyhow::anyhow!("Failed to lock audio buffer: {e}")
+        })?;
         Ok(buffer.clone())
     }
 
     /// Clear the recorded audio buffer.
     pub fn clear_buffer(&self) -> Result<()> {
-        let mut buffer = self
-            .buffer
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Failed to lock audio buffer"))?;
+        let mut buffer = self.buffer.lock().map_err(|e| {
+            log::warn!("Audio buffer mutex poisoned: {e}");
+            anyhow::anyhow!("Failed to lock audio buffer: {e}")
+        })?;
         buffer.clear();
         Ok(())
     }
 
     /// Return the recording duration in seconds based on buffer length.
     pub fn get_recording_duration_seconds(&self) -> Result<f32> {
-        let buffer = self
-            .buffer
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Failed to lock audio buffer"))?;
+        let buffer = self.buffer.lock().map_err(|e| {
+            log::warn!("Audio buffer mutex poisoned: {e}");
+            anyhow::anyhow!("Failed to lock audio buffer: {e}")
+        })?;
         Ok(buffer.len() as f32 / self.sample_rate as f32)
     }
 

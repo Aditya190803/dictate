@@ -2,6 +2,7 @@ use crate::intent::DictationIntent;
 use crate::transcript::TranscriptBuffer;
 use crate::typing::TypingBackend;
 use anyhow::Result;
+use log::{info, warn};
 use std::ops::Range;
 
 #[derive(Debug, Clone, Copy)]
@@ -141,21 +142,21 @@ pub async fn apply_edit<B: TypingBackend + ?Sized>(
             let deleted_chars = buffer.text()[range.clone()].chars().count();
             backend.backspace(deleted_chars).await?;
             buffer.delete_range(range);
-            eprintln!("✂️  Deleted {} chars", deleted_chars);
+            info!("Deleted {deleted_chars} chars");
         }
         TextEdit::ReplaceSuffix { range, replacement } => {
             let deleted_chars = buffer.text()[range.clone()].chars().count();
             backend.backspace(deleted_chars).await?;
             backend.type_text(&replacement).await?;
             buffer.replace_range(range, &replacement);
-            eprintln!("✂️  Replaced {} chars", deleted_chars);
+            info!("Replaced {deleted_chars} chars");
         }
         TextEdit::ResetContext => {
             buffer.clear();
-            eprintln!("🧹 Dictate context reset");
+            info!("Dictate context reset");
         }
         TextEdit::Reject(reason) => {
-            eprintln!("⚠️  Context edit rejected: {}", reason);
+            warn!("Context edit rejected: {reason}");
             buffer.record_rejected_command(&reason);
             if policy.type_rejected_commands {
                 backend.type_text(&reason).await?;

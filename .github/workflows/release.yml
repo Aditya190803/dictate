@@ -44,10 +44,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Toolchain pinned in rust-toolchain.toml; @master follows it (same as
-      # ci.yml). The base target runs without extra toolchain input.
+      # Toolchain: stable explicitly (dtolnay/rust-toolchain requires the
+      # input; it does not fall back to rust-toolchain.toml). rustfmt/clippy
+      # components come from rust-toolchain.toml but a release build needs
+      # only the compiler, so the input is just `stable`.
       - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2

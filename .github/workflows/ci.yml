@@ -32,12 +32,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Toolchain is pinned in rust-toolchain.toml (stable + rustfmt/clippy),
-      # so this step takes no toolchain input and just adds the matrix target.
-      # (Uses @master because that ref follows the toolchain file; the pin
-      # itself lives in rust-toolchain.toml, not in the action ref.)
+      # Toolchain is pinned to stable here (dtolnay/rust-toolchain requires
+      # the input; it does not fall back to rust-toolchain.toml), and
+      # rust-toolchain.toml adds the rustfmt/clippy components. The matrix
+      # target is installed on top.
       - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       # Swatinem/rust-cache instead of hand-rolled actions/cache on
